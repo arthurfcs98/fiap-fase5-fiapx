@@ -25,11 +25,11 @@
     "test:e2e": "jest -c apps/video-api/test/jest-e2e.config.js --runInBand"
   },
   "dependencies": {
-    "@nestjs/common": "11.2.6",
-    "@nestjs/core": "11.2.6",
-    "@nestjs/platform-express": "11.2.6",
-    "@nestjs/swagger": "11.4.7",
-    "@nestjs/terminus": "11.1.1",
+    "@nestjs/common": "12.1.0",
+    "@nestjs/core": "12.1.0",
+    "@nestjs/platform-express": "12.1.0",
+    "@nestjs/swagger": "12.0.2",
+    "@nestjs/terminus": "12.1.0",
     "@prometheus-io/client": "0.16.1",
     "nestjs-pino": "5.2.1",
     "pino": "10.3.1",
