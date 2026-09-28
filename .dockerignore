@@ -1,0 +1,25 @@
+# Contexto mínimo por lista de permissão: o Dockerfile só precisa de package*.json,
+# nest-cli.json, tsconfig.json, apps/, libs/ e do healthcheck. Todo o resto fica de fora
+# (mais rápido e sem risco de levar segredos, inclusive .env em subpastas, para as camadas
+# e para o cache do CI).
+*
+!package.json
+!package-lock.json
+!nest-cli.json
+!tsconfig.json
+!apps
+!libs
+!docker/healthcheck.sh
+
+# Dentro de apps/ e libs/, exclui o que não é código de produção.
+**/node_modules
+**/dist
+**/coverage
+**/*.log
+**/.env
+**/.env.*
+**/*.spec.ts
+**/*.e2e-spec.ts
+**/test
+**/jest.config.js
+**/.DS_Store

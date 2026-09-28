@@ -1,0 +1,16 @@
+# Prettier cobre código TS/JS/JSON. Markdown, YAML e manifests ficam fora de propósito
+# (docs e infra têm donos e formatação próprios).
+node_modules/
+dist/
+coverage/
+legacy/
+package-lock.json
+*.md
+*.yml
+*.yaml
+*.toml
+*.sh
+infra/k8s/
+infra/vm/
+docs/
+.github/

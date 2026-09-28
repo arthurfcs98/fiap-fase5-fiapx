@@ -1,0 +1,299 @@
+# CI do monorepo FIAP X.
+# PR e push na main: qualidade (lint, typecheck, build, actionlint, hadolint, shellcheck),
+# testes (cobertura >= 80% por project), E2E, build das 3 imagens (UMA vez, com cache) e smoke
+# do compose com ESSAS imagens. Só no push na main, e só se tudo passou, as mesmas imagens
+# testadas no smoke vão para o GHCR (sha-<7> e main).
+# O único check exigido na branch protection é o `ci-ok`.
+#
+# Actions de terceiros fixadas pelo SHA do commit (versão no comentário); o Dependabot
+# (.github/dependabot.yml) abre PR quando sai versão nova.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # PR: cancela a execução superada. main: não cancela a que está rodando (serializa, o que
+  # mantém a ordem da tag :main). Atenção: o GitHub guarda só UMA execução pendente por grupo;
+  # com 3 pushes seguidos, a do meio é cancelada e aquele commit fica sem imagem sha-<7>.
+  # Por isso o deploy sempre fixa o sha-<7> publicado pelo job `images`, nunca :main.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+env:
+  IMAGE_PREFIX: ghcr.io/arthurfcs98/fiapx
+  APPS: video-api video-worker notification-service
+
+jobs:
+  quality:
+    name: quality (lint, typecheck, build, linters de infra)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run build
+      - name: Login no Docker Hub (opcional, evita rate limit de pull anônimo)
+        if: vars.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: actionlint (workflows, com shellcheck nos run)
+        run: >-
+          docker run --rm -v "$PWD:/repo:ro" -w /repo
+          rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+          -color
+      - name: hadolint (Dockerfile, regras em .hadolint.yaml)
+        run: >-
+          docker run --rm -v "$PWD:/repo:ro" -w /repo
+          hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d
+          hadolint docker/node-service.Dockerfile
+      - name: shellcheck (scripts)
+        run: shellcheck scripts/*.sh docker/healthcheck.sh infra/postgres/init/*.sh
+
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: video-api, path: apps/video-api }
+          - { name: video-worker, path: apps/video-worker }
+          - { name: notification-service, path: apps/notification-service }
+          - { name: common, path: libs/common }
+          - { name: observability, path: libs/observability }
+          - { name: messaging, path: libs/messaging }
+          - { name: contracts, path: libs/contracts }
+          - { name: storage, path: libs/storage }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # Cada project roda sozinho: o threshold de 80% vale para ele isoladamente.
+      - name: Cobertura (${{ matrix.path }})
+        run: npm run test:cov -- ${{ matrix.path }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: coverage-${{ matrix.name }}
+          path: coverage/${{ matrix.name }}
+          retention-days: 14
+          if-no-files-found: ignore
+
+  e2e:
+    name: e2e (video-api)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm run test:e2e
+
+  build-images:
+    name: build image (${{ matrix.app }})
+    # PR e main. Constrói UMA vez (cache do Actions) e exporta a imagem como artefato: o smoke
+    # sobe exatamente estas imagens e o job `images` publica exatamente estas imagens.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { app: video-api, ffmpeg: "false" }
+          - { app: video-worker, ffmpeg: "true" }
+          - { app: notification-service, ffmpeg: "false" }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Login no Docker Hub (opcional, evita rate limit de pull anônimo)
+        if: vars.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Versão de build (sha-<7>, igual à tag da imagem)
+        id: version
+        run: echo "app_version=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - name: Tags e labels OCI
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE_PREFIX }}-${{ matrix.app }}
+          tags: type=raw,value=${{ steps.version.outputs.app_version }}
+          labels: |
+            org.opencontainers.image.title=fiapx-${{ matrix.app }}
+            org.opencontainers.image.source=https://github.com/arthurfcs98/fiap-fase5-fiapx
+            org.opencontainers.image.version=${{ steps.version.outputs.app_version }}
+      - name: Build (exporta a imagem para o artefato)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/node-service.Dockerfile
+          build-args: |
+            APP=${{ matrix.app }}
+            WITH_FFMPEG=${{ matrix.ffmpeg }}
+            APP_VERSION=${{ steps.version.outputs.app_version }}
+            VCS_REF=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=docker,dest=${{ runner.temp }}/image-${{ matrix.app }}.tar
+          cache-from: type=gha,scope=image-${{ matrix.app }}
+          # ignore-error: falha transitória do cache do Actions não derruba o build.
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.app }},ignore-error=true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-${{ matrix.app }}
+          path: ${{ runner.temp }}/image-${{ matrix.app }}.tar
+          retention-days: 1
+          if-no-files-found: error
+
+  compose-smoke:
+    name: compose smoke (stack completo, imagens do build)
+    needs: [build-images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Login no Docker Hub (opcional, evita rate limit de pull anônimo)
+        if: vars.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: image-*
+          path: ${{ runner.temp }}/images
+          merge-multiple: true
+      - name: Carrega as imagens do build (sem rebuild)
+        run: |
+          for tar in "$RUNNER_TEMP"/images/*.tar; do docker load -i "$tar"; done
+          # O shell ganha do .env no compose e no smoke: sobe e confere a tag deste commit.
+          echo "FIAPX_IMAGE_TAG=sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+          echo "APP_VERSION=sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+      - name: Segredos locais efêmeros (.env)
+        run: ./scripts/dev-secrets.sh
+      - name: Valida o compose
+        run: |
+          docker version --format 'Docker {{.Server.Version}}'
+          docker compose version
+          docker compose config --quiet
+      - name: Sobe o stack e espera healthy
+        run: docker compose up -d --no-build --wait --wait-timeout 300
+      - name: Smoke
+        run: ./scripts/compose-smoke.sh
+      - name: Logs do compose (em caso de falha)
+        if: failure()
+        run: docker compose logs --no-color --timestamps > compose-logs.txt
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: compose-logs
+          path: compose-logs.txt
+          retention-days: 7
+      - name: Derruba o stack
+        if: always()
+        run: docker compose down -v --remove-orphans
+
+  images:
+    name: publish images (GHCR)
+    # Só no push na main e só com qualidade, testes, E2E e smoke verdes. Publica as MESMAS
+    # imagens que passaram no smoke (artefatos do build-images), sem rebuild.
+    needs: [quality, test, e2e, compose-smoke]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    outputs:
+      tag: ${{ steps.push.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: image-*
+          path: ${{ runner.temp }}/images
+          merge-multiple: true
+      - name: Carrega as imagens testadas
+        run: for tar in "$RUNNER_TEMP"/images/*.tar; do docker load -i "$tar"; done
+      - name: Login no GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push sha-<7> e main
+        id: push
+        run: |
+          tag="sha-${GITHUB_SHA::7}"
+          {
+            echo "### Imagens publicadas (${tag})"
+            echo ""
+            echo "| Imagem | Digest |"
+            echo "|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for app in $APPS; do
+            image="${IMAGE_PREFIX}-${app}"
+            docker push "${image}:${tag}"
+            docker tag "${image}:${tag}" "${image}:main"
+            docker push "${image}:main"
+            digest="$(docker inspect --format '{{index .RepoDigests 0}}' "${image}:${tag}")"
+            echo "| \`${image}:${tag}\` | \`${digest#*@}\` |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+  ci-ok:
+    name: ci-ok
+    # Agregador: único check exigido na branch protection. Falha se qualquer job falhou ou
+    # foi cancelado; `skipped` é aceito (o `images` só roda no push na main).
+    if: always()
+    needs: [quality, test, e2e, build-images, compose-smoke, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Resultado dos jobs
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null

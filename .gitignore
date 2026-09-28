@@ -1,0 +1,39 @@
+# Dependências e build
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Testes
+coverage/
+junit*.xml
+
+# Segredos locais (gerados por scripts/dev-secrets.sh) — NUNCA commitar
+.env
+.env.*
+!.env.example
+secrets/
+
+# Logs
+*.log
+npm-debug.log*
+compose-logs.txt
+
+# SO e IDEs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Credenciais — NUNCA commitar
+*.pem
+*.key
+*.p12
+id_rsa*
+id_ed25519*
+kubeconfig*
+*.kubeconfig
+.kube/
+*.tfvars
+!*.tfvars.example

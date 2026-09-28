@@ -1,0 +1,43 @@
+# Dependabot: mantém em dia as actions (fixadas por SHA), as imagens base (tag + digest no
+# Dockerfile e no compose) e as dependências npm. PRs semanais, agrupados para não virar ruído.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: ci
+
+  # docker/node-service.Dockerfile (base node:<tag>@sha256:<digest>)
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+
+  # compose.yaml (postgres, redis, rabbitmq, mailpit, garage, node do garage-init)
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      nestjs:
+        patterns: ["@nestjs/*"]
+      dev-dependencies:
+        dependency-type: development
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore

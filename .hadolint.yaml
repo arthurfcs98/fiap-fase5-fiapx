@@ -1,0 +1,6 @@
+# hadolint (roda no job "quality" do CI).
+ignored:
+  # Versões do apk vêm do Alpine fixado pelo digest da imagem base; fixar ffmpeg=<versão>
+  # quebraria o build a cada rebuild do índice do Alpine.
+  - DL3018
+failure-threshold: info

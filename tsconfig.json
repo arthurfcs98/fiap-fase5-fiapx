@@ -1,0 +1,40 @@
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "resolvePackageJsonExports": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "declaration": false,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2023",
+    "lib": ["ES2023"],
+    "sourceMap": true,
+    "outDir": "./dist",
+    "baseUrl": "./",
+    "skipLibCheck": true,
+    "strict": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": ["node", "jest"],
+    "paths": {
+      "@fiapx/common": ["libs/common/src"],
+      "@fiapx/common/*": ["libs/common/src/*"],
+      "@fiapx/observability": ["libs/observability/src"],
+      "@fiapx/observability/*": ["libs/observability/src/*"],
+      "@fiapx/messaging": ["libs/messaging/src"],
+      "@fiapx/messaging/*": ["libs/messaging/src/*"],
+      "@fiapx/contracts": ["libs/contracts/src"],
+      "@fiapx/contracts/*": ["libs/contracts/src/*"],
+      "@fiapx/storage": ["libs/storage/src"],
+      "@fiapx/storage/*": ["libs/storage/src/*"]
+    }
+  },
+  "include": ["apps/**/*.ts", "libs/**/*.ts"],
+  "exclude": ["node_modules", "dist", "coverage"]
+}
