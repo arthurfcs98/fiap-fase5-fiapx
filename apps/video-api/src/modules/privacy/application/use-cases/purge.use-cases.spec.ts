@@ -31,6 +31,8 @@ describe('PurgeOrphanObjectsUseCase', () => {
         ),
       ),
       deleteAllOf: jest.fn().mockResolvedValue(2),
+      listObjects: jest.fn().mockResolvedValue([]),
+      abortIncompleteUploads: jest.fn().mockResolvedValue(0),
     };
     return { uow, store, useCase: new PurgeOrphanObjectsUseCase(uow, store, buckets) };
   }

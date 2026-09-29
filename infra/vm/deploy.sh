@@ -47,7 +47,7 @@ readonly JOBS=infra/k8s/jobs                    # Jobs one-shot com label fiapx.
 readonly HOME_DIR=/var/lib/fiapx-deploy
 readonly STATE=$HOME_DIR/state
 readonly KEEP_RELEASES=5
-readonly ROLLOUT_TIMEOUT=600s                   # worker em Recreate espera até 330 s de grace do vídeo em curso
+readonly ROLLOUT_TIMEOUT=900s                   # worker em Recreate espera até 720 s de grace do vídeo em curso
 readonly JOB_TIMEOUT=300
 readonly PART_OF=app.kubernetes.io/part-of=fiapx
 readonly MANIFEST_TYPES='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json'
@@ -243,11 +243,18 @@ run_jobs() {  # $1 dir da release, $2 fase
   done
 }
 
+# O log do deploy aparece no GitHub Actions de um repo PÚBLICO: o nome do nó (hostname da VM)
+# nunca sai daqui. Tira a linha "Node:" do describe e o "assigned <pod> to <nó>" dos eventos.
+redact_node() {
+  sed -E -e 's/^([[:space:]]*Node:[[:space:]]*).*/\1<omitido>/' \
+    -e 's/(assigned [^ ]+ to )[^ ]+/\1<nó>/'
+}
+
 diagnose() {
   log "--- diagnóstico de $1 ---"
-  kq describe "$1" 2>&1 | tail -n 40 || true
+  kq describe "$1" 2>&1 | tail -n 40 | redact_node || true
   kq logs "$1" --all-containers --tail=100 2>&1 || true
-  kq get events --sort-by=.lastTimestamp 2>&1 | tail -n 15 || true
+  kq get events --sort-by=.lastTimestamp 2>&1 | tail -n 15 | redact_node || true
 }
 
 smoke_internal() {
@@ -382,7 +389,8 @@ do_rollback() {
 do_status() {
   printf 'atual:    %s\nanterior: %s\n' \
     "$(cat "$STATE/current" 2>/dev/null || echo -)" "$(cat "$STATE/previous" 2>/dev/null || echo -)"
-  kq get deploy,sts,ds,hpa,jobs,pods -o wide 2>&1 || true
+  # Sem "-o wide": a coluna NODE traria o hostname da VM para o log público do Actions.
+  kq get deploy,sts,ds,hpa,jobs,pods 2>&1 || true
   kq get scaledobjects.keda.sh 2>&1 || true
 }
 

@@ -1,4 +1,4 @@
-import { RetryableError } from '@fiapx/common';
+import { DependencyUnavailableError, RetryableError } from '@fiapx/common';
 import { createTransport } from 'nodemailer';
 import { EmailRejectedError } from '../../domain/email-rejected.error';
 import { safeErrorText } from '../../domain/personal-data';
@@ -44,6 +44,19 @@ const PERMANENT_ERROR_CODES = new Set([
   'EMAXRECIPIENTS',
 ]);
 
+/**
+ * The SMTP server itself is unreachable (no reply code) or refusing service (`421`): every
+ * e-mail would fail the same way, so the consumer pauses instead of spending retries.
+ */
+const OUTAGE_ERROR_CODES = new Set([
+  'ECONNECTION',
+  'ETIMEDOUT',
+  'ESOCKET',
+  'EDNS',
+  'ECONNREFUSED',
+  'ECONNRESET',
+]);
+
 export function createSmtpTransport(options: { host: string; port: number }): SmtpTransport {
   return createTransport({
     host: options.host,
@@ -84,9 +97,10 @@ export class SmtpEmailSender implements EmailSender {
 }
 
 /**
- * Classifies a nodemailer failure: SMTP reply 4xx → transient, 5xx → permanent; without a reply
- * code, by nodemailer error code (unknown → transient). The reason is redacted: SMTP replies
- * often quote the recipient address, and nodemailer adds it to `rejected` (never logged here).
+ * Classifies a nodemailer failure: server unreachable or `421` → `DependencyUnavailableError`
+ * (outage); SMTP reply 4xx → transient, 5xx → permanent; without a reply code, by nodemailer
+ * error code (unknown → transient). The reason is redacted: SMTP replies often quote the
+ * recipient address, and nodemailer adds it to `rejected` (never logged here).
  */
 export function smtpFailure(error: unknown): RetryableError | EmailRejectedError {
   const fields = (typeof error === 'object' && error !== null ? error : {}) as {
@@ -101,6 +115,10 @@ export function smtpFailure(error: unknown): RetryableError | EmailRejectedError
     .join(' ')
     .concat(`: ${message}`);
 
+  const outage =
+    responseCode === 421 ||
+    (responseCode === undefined && code !== undefined && OUTAGE_ERROR_CODES.has(code));
+  if (outage) return new DependencyUnavailableError('smtp', { detail: safeErrorText(reason) });
   const permanent =
     responseCode !== undefined
       ? responseCode >= 500

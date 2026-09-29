@@ -25,4 +25,28 @@ describe('JwtStrategy', () => {
     await expect(strategy.validate({})).rejects.toMatchObject({ appError: { code: 'A0003' } });
     expect(findById).not.toHaveBeenCalled();
   });
+
+  it('database down while looking the user up → 503 X0003 (not 401: the session stays)', async () => {
+    const down = new InMemoryUserRepository();
+    jest
+      .spyOn(down, 'findById')
+      .mockRejectedValue(
+        Object.assign(new Error('getaddrinfo ENOTFOUND postgres'), { code: 'ENOTFOUND' }),
+      );
+    const failing = new JwtStrategy(testConfig(), down);
+
+    await expect(failing.validate({ sub: USER_ID })).rejects.toMatchObject({
+      appError: { code: 'X0003', httpStatus: 503, metadata: { retryAfterSeconds: 5 } },
+    });
+  });
+
+  it('non-Error repository failures are also a 503', async () => {
+    const down = new InMemoryUserRepository();
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- non-Error on purpose
+    jest.spyOn(down, 'findById').mockReturnValue(Promise.reject('timeout'));
+
+    await expect(
+      new JwtStrategy(testConfig(), down).validate({ sub: USER_ID }),
+    ).rejects.toMatchObject({ appError: { code: 'X0003' } });
+  });
 });

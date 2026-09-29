@@ -46,6 +46,8 @@ import type { VideoSettings } from '../../application/video.settings';
 import { VIDEO_SETTINGS } from '../../application/video.settings';
 import type { VideoDetailView, VideoListView } from '../../application/video.view';
 import { ALLOWED_EXTENSIONS } from '../../domain/video-file.policy';
+import type { UploadSlots } from '../http/upload-slots';
+import { UPLOAD_BUSY_RETRY_AFTER_SECONDS, UPLOAD_SLOTS } from '../http/upload-slots';
 import { VIDEO_STATUSES } from '../../domain/video-status';
 import type { ListVideosQuery } from '../dto/video.dto';
 import {
@@ -73,6 +75,7 @@ export class VideosController {
     private readonly getVideo: GetVideoUseCase,
     private readonly createDownloadUrl: CreateDownloadUrlUseCase,
     @Inject(VIDEO_SETTINGS) private readonly settings: VideoSettings,
+    @Inject(UPLOAD_SLOTS) private readonly slots: UploadSlots,
   ) {}
 
   @Post()
@@ -97,8 +100,12 @@ export class VideosController {
   @ApiAcceptedResponse({ type: UploadAcceptedDto })
   @ApiBadRequestResponse({ description: 'V0002 UNSUPPORTED_FORMAT · X0001 VALIDATION' })
   @ApiPayloadTooLargeResponse({ description: 'V0003 FILE_TOO_LARGE' })
-  @ApiTooManyRequestsResponse({ description: 'X0429 (Retry-After)' })
-  @ApiServiceUnavailableResponse({ description: 'X0003 storage indisponível (Retry-After)' })
+  @ApiTooManyRequestsResponse({
+    description: 'X0429 throttling · V0007 vídeos em andamento demais (Retry-After)',
+  })
+  @ApiServiceUnavailableResponse({
+    description: 'X0003 storage indisponível ou réplica ocupada (Retry-After)',
+  })
   async upload(
     @Req() req: IncomingMessage,
     @CurrentUser() user: AuthenticatedUser,
@@ -120,13 +127,36 @@ export class VideosController {
       }
     }
 
+    try {
+      await this.uploadVideo.assertWithinPendingLimit(user.id, this.slots.inFlightFor(user.id));
+    } catch (error) {
+      await drainRequest(req);
+      throw error;
+    }
+    const release = this.slots.tryAcquire(user.id);
+    if (!release) {
+      // The replica is streaming as many uploads as its memory allows: try again shortly.
+      await drainRequest(req);
+      throw CommonErrors.UNAVAILABLE(UPLOAD_BUSY_RETRY_AFTER_SECONDS);
+    }
+
     const correlationId = getCorrelationId() ?? randomUUID();
-    return readMultipartFile(
-      req,
-      { maxBytes: this.settings.maxUploadBytes, maxMb: this.settings.maxUploadMb },
-      ({ file, signal }) =>
-        this.uploadVideo.execute({ userId: user.id, correlationId, idempotencyKey, file, signal }),
-    );
+    try {
+      return await readMultipartFile(
+        req,
+        { maxBytes: this.settings.maxUploadBytes, maxMb: this.settings.maxUploadMb },
+        ({ file, signal }) =>
+          this.uploadVideo.execute({
+            userId: user.id,
+            correlationId,
+            idempotencyKey,
+            file,
+            signal,
+          }),
+      );
+    } finally {
+      release();
+    }
   }
 
   @Get()

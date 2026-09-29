@@ -6,7 +6,9 @@
  * - its own Idempotency-Key, generated once and reused on every retry of that file, so a retry
  *   after a lost response never creates a second video;
  * - automatic retries only for 429/503 (Retry-After or exponential backoff). Other errors stop
- *   and offer a manual "Tentar de novo" with the same key.
+ *   and offer a manual "Tentar de novo" with the same key;
+ * - 429 V0007 (the user already has as many videos in progress as allowed) is a normal wait,
+ *   not a failure: the file waits (Retry-After) until a video finishes, with its own budget.
  */
 import { ApiError, isAbortError, uploadVideo, userMessage } from './api.js';
 import { el, setAlert } from './dom.js';
@@ -22,6 +24,9 @@ import {
 const MAX_AUTO_RETRIES = 3;
 const BACKOFF_BASE_S = 2;
 const BACKOFF_MAX_S = 30;
+/** V0007 waits (about 10 min with the 15 s Retry-After): the queue of the user drains. */
+const MAX_PENDING_WAITS = 40;
+const PENDING_VIDEOS_CODE = 'V0007';
 
 /** Item states; `data-state` on the row drives the styling. */
 const STATE = Object.freeze({
@@ -122,6 +127,7 @@ export class UploadQueue {
         loaded: 0,
         total: file.size,
         autoRetries: 0,
+        pendingWaits: 0,
         handle: null,
         timer: null,
         videoId: null,
@@ -237,29 +243,44 @@ export class UploadQueue {
       this.setState(item, STATE.ERROR, userMessage(apiError));
       return;
     }
+    if (apiError.code === PENDING_VIDEOS_CODE && item.pendingWaits < MAX_PENDING_WAITS) {
+      item.pendingWaits += 1;
+      const waitSeconds = Math.max(1, apiError.retryAfterSeconds ?? 15);
+      this.waitAndRetry(
+        item,
+        waitSeconds,
+        `${apiError.description} Nova tentativa em ${waitSeconds} s.`,
+      );
+      return;
+    }
     if (apiError.isRetryable && item.autoRetries < MAX_AUTO_RETRIES) {
       item.autoRetries += 1;
       const backoff = Math.min(BACKOFF_MAX_S, BACKOFF_BASE_S ** item.autoRetries);
       const waitSeconds = Math.max(1, apiError.retryAfterSeconds ?? backoff);
-      this.setState(
+      this.waitAndRetry(
         item,
-        STATE.RETRY_WAIT,
+        waitSeconds,
         `Servidor ocupado. Nova tentativa em ${waitSeconds} s (${item.autoRetries}/${MAX_AUTO_RETRIES}).`,
       );
-      item.timer = window.setTimeout(() => {
-        item.timer = null;
-        if (item.state !== STATE.RETRY_WAIT) return;
-        this.setState(item, STATE.WAITING, null);
-        this.pump();
-      }, waitSeconds * 1000);
       return;
     }
     item.error = apiError;
     this.setState(item, STATE.ERROR, userMessage(apiError));
   }
 
+  waitAndRetry(item, waitSeconds, message) {
+    this.setState(item, STATE.RETRY_WAIT, message);
+    item.timer = window.setTimeout(() => {
+      item.timer = null;
+      if (item.state !== STATE.RETRY_WAIT) return;
+      this.setState(item, STATE.WAITING, null);
+      this.pump();
+    }, waitSeconds * 1000);
+  }
+
   retry(item) {
     item.autoRetries = 0;
+    item.pendingWaits = 0;
     item.error = null;
     this.setState(item, STATE.WAITING, null);
     this.pump();

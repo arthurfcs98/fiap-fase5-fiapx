@@ -28,11 +28,15 @@ import { VideosModule } from './modules/videos/videos.module';
 import { FailOpenThrottlerStorage } from './shared/infrastructure/throttling/fail-open-throttler.storage';
 import { REDIS_CLIENT } from './shared/infrastructure/redis/redis.constants';
 import {
+  buildLoginIpThrottler,
   buildThrottler,
   DEFAULT_THROTTLE_LIMITS,
 } from './shared/infrastructure/throttling/throttle';
 import { SharedModule } from './shared/shared.module';
 import { resolvePublicDir } from './static-assets';
+
+/** S3 part size of the API uploads (the S3 minimum). */
+export const API_UPLOAD_PART_BYTES = 5 * 1024 * 1024;
 
 /**
  * video-api (contratos.md, sections 3, 5, 8, 12 and 13). Global infrastructure first (config,
@@ -70,9 +74,15 @@ import { resolvePublicDir } from './static-assets';
         connectionName: SERVICE_NAME,
       }),
     }),
+    // Uploads stream to S3 with 5 MiB parts, 1 in flight (~10 MiB of buffers per upload):
+    // together with MAX_CONCURRENT_UPLOADS it bounds the memory of the pod.
     StorageModule.forRootAsync({
       inject: [API_CONFIG],
-      useFactory: (config: ApiConfig) => storageOptionsFromConfig(config),
+      useFactory: (config: ApiConfig) => ({
+        ...storageOptionsFromConfig(config),
+        partSizeBytes: API_UPLOAD_PART_BYTES,
+        queueSize: 1,
+      }),
     }),
     TypeOrmModule.forRootAsync({
       inject: [API_CONFIG],
@@ -97,6 +107,8 @@ import { resolvePublicDir } from './static-assets';
             login: config.THROTTLE_LOGIN_LIMIT,
             upload: config.THROTTLE_UPLOAD_LIMIT,
           }),
+          // Login only: per IP whatever the e-mail (bcrypt CPU budget).
+          buildLoginIpThrottler(config.THROTTLE_LOGIN_IP_LIMIT),
         ],
         storage: new FailOpenThrottlerStorage(new ThrottlerStorageRedisService(redis)),
         errorMessage: 'Muitas requisições. Aguarde alguns instantes e tente de novo.',

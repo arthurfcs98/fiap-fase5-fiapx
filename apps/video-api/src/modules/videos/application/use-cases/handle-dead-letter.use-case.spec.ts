@@ -32,11 +32,11 @@ async function setup(video = aVideo({ status: 'PROCESSING', attempts: 4 })) {
 }
 
 describe('HandleDeadLetterUseCase', () => {
-  it('PROCESSING → FAILED P0099 + outbox video.failed + raw deleted', async () => {
+  it('crash loop (delivery_limit): PROCESSING → FAILED P0099 + outbox video.failed + raw deleted', async () => {
     const { uow, storage, metrics, useCase } = await setup();
 
     await expect(
-      useCase.execute(videoUploadedFixture, videoUploadedFixture.id, 'rejected'),
+      useCase.execute(videoUploadedFixture, videoUploadedFixture.id, 'delivery_limit'),
     ).resolves.toBe('failed');
 
     expect(uow.videos.snapshot(VIDEO_ID)).toMatchObject({
@@ -53,6 +53,29 @@ describe('HandleDeadLetterUseCase', () => {
     expect(event?.payload).toMatchObject({ errorCode: 'P0099', userEmail: 'ana@example.com' });
     expect(storage.contentOf('fiapx-raw', RAW_KEY)).toBeUndefined();
     expect(metrics.failures).toEqual(['P0099']);
+  });
+
+  it('retries exhausted in the worker (rejected) → FAILED P0098, still counted by the SLO', async () => {
+    const { uow, metrics, useCase } = await setup();
+
+    await useCase.execute(videoUploadedFixture, videoUploadedFixture.id, 'rejected');
+
+    expect(uow.videos.snapshot(VIDEO_ID)).toMatchObject({
+      status: 'FAILED',
+      errorCode: 'P0098',
+      errorMessage: 'O processamento falhou após todas as tentativas.',
+    });
+    expect(uow.videos.history[0]?.reason).toBe('Tentativas esgotadas no worker (P0098)');
+    expect(uow.outbox.ofType('video.failed')[0]?.payload.errorCode).toBe('P0098');
+    expect(metrics.failures).toEqual(['P0098']);
+  });
+
+  it('unknown death reason → P0099; a video that never started keeps startedAt empty', async () => {
+    const { uow, useCase } = await setup(aVideo({ status: 'QUEUED' }));
+
+    await useCase.execute(videoUploadedFixture, videoUploadedFixture.id);
+
+    expect(uow.videos.snapshot(VIDEO_ID)).toMatchObject({ errorCode: 'P0099', startedAt: null });
   });
 
   it('already terminal (COMPLETED) is left as is', async () => {

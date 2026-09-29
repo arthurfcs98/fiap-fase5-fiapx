@@ -1,5 +1,7 @@
+import type { HealthRegistry } from '@fiapx/observability';
+import { HEALTH_REGISTRY } from '@fiapx/observability';
 import type { OnModuleDestroy } from '@nestjs/common';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { z } from 'zod';
 import { AmqpConnection } from '../connection/amqp-connection';
 import { ConsumerRunner } from '../consumer/consumer-runner';
@@ -10,11 +12,18 @@ import { TopologyInitializer } from '../topology-setup';
 import type { MessagingModuleOptions } from './messaging.options';
 import { MESSAGING_OPTIONS } from './messaging.options';
 
+/** Nome da verificação dos consumidores no `HEALTH_REGISTRY` (`/health` da porta 9464). */
+export const CONSUMERS_HEALTH_CHECK = 'messaging-consumers';
+
 /**
  * Registro dos consumidores do serviço. Cada app chama {@link start} no
  * `onApplicationBootstrap` do seu consumer (camada `interfaces`); no shutdown (SIGTERM) todos
  * param de consumir e esperam as mensagens em processamento (`onModuleDestroy`, antes de o
  * banco e a conexão AMQP fecharem).
+ *
+ * Com o `MetricsServerModule` no app, registra no `HEALTH_REGISTRY` a verificação
+ * {@link CONSUMERS_HEALTH_CHECK}: o `/health` falha se um consumidor ficar sem consumer ativo
+ * com o broker conectado (ex.: cancelado pelo broker e sem conseguir re-assinar).
  */
 @Injectable()
 export class MessageConsumers implements OnModuleDestroy {
@@ -26,7 +35,12 @@ export class MessageConsumers implements OnModuleDestroy {
     private readonly metrics: MessagingMetrics,
     private readonly topology: TopologyInitializer,
     @Inject(MESSAGING_OPTIONS) private readonly options: MessagingModuleOptions,
-  ) {}
+    @Optional() @Inject(HEALTH_REGISTRY) health?: HealthRegistry,
+  ) {
+    health?.register(CONSUMERS_HEALTH_CHECK, () =>
+      this.runners.every((runner) => runner.isHealthy),
+    );
+  }
 
   /** Cria e inicia o consumidor (não bloqueia se o broker estiver fora). */
   start<TSchema extends z.ZodType<ConsumableEvent>>(
@@ -40,6 +54,7 @@ export class MessageConsumers implements OnModuleDestroy {
       publisher: this.publisher,
       metrics: this.metrics,
       beforeConsume: () => this.topology.whenReady(),
+      ensureTopology: () => this.topology.redeclare(),
       shutdownTimeoutMs: this.options.shutdownTimeoutMs,
     });
     runner.start();

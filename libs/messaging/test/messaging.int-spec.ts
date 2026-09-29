@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { ProcessingErrors, RetryableError } from '@fiapx/common';
+import { DependencyUnavailableError, ProcessingErrors, RetryableError } from '@fiapx/common';
 import type { VideoUploadedEvent } from '@fiapx/contracts';
 import { createEvent, notificationEvent, videoUploadedEvent } from '@fiapx/contracts';
 import {
@@ -14,7 +14,12 @@ import { delay, quietNestLogs, startRabbitMq, waitFor } from '@fiapx/testing';
 import { Registry } from '@prometheus-io/client';
 import type { Channel, ChannelModel, GetMessage } from 'amqplib';
 import { connect } from 'amqplib';
-import type { ConsumeResult, ConsumerDefinition, MessageContext } from '../src';
+import type {
+  ConsumeResult,
+  ConsumerDefinition,
+  ConsumerRunnerDependencies,
+  MessageContext,
+} from '../src';
 import {
   AmqpConnection,
   buildTopology,
@@ -45,6 +50,8 @@ const QUEUE_FAMILY = [
   retryQueueName(QUEUE, 3),
   deadLetterQueueName(QUEUE),
   QUEUES.apiVideoDeadLetter,
+  retryQueueName(QUEUES.apiVideoDeadLetter, 1),
+  deadLetterQueueName(QUEUES.apiVideoDeadLetter),
   QUEUES.apiVideoProcessing,
   QUEUES.notificationEvents,
 ];
@@ -111,10 +118,19 @@ describe('libs/messaging com RabbitMQ real', () => {
   async function startConsumer(
     harness: Harness,
     definition: Omit<ConsumerDefinition<typeof videoUploadedEvent>, 'queue' | 'schema'>,
+    options: {
+      queue?: string;
+      deps?: Partial<Omit<ConsumerRunnerDependencies, 'connection' | 'publisher'>>;
+    } = {},
   ): Promise<ConsumerRunner<typeof videoUploadedEvent>> {
     const runner = new ConsumerRunner(
-      { queue: QUEUE, schema: videoUploadedEvent, ...definition },
-      { connection: harness.connection, publisher: harness.publisher, metrics: harness.metrics },
+      { queue: options.queue ?? QUEUE, schema: videoUploadedEvent, ...definition },
+      {
+        connection: harness.connection,
+        publisher: harness.publisher,
+        metrics: harness.metrics,
+        ...options.deps,
+      },
     );
     harness.runners.push(runner);
     runner.start();
@@ -130,8 +146,12 @@ describe('libs/messaging com RabbitMQ real', () => {
     return (await inspect.checkQueue(queue)).messageCount;
   }
 
-  function consumedTotal(harness: Harness, result: ConsumeResult): Promise<number> {
-    return harness.metrics.consumedCount(QUEUE, result);
+  function consumedTotal(
+    harness: Harness,
+    result: ConsumeResult,
+    queue: string = QUEUE,
+  ): Promise<number> {
+    return harness.metrics.consumedCount(queue, result);
   }
 
   it('(a) sucesso: handler recebe o evento validado no contexto de correlação e a mensagem é confirmada', async () => {
@@ -451,6 +471,150 @@ describe('libs/messaging com RabbitMQ real', () => {
       await waitFor(async () => (await messageCount(QUEUE)) >= 1);
     }, 40_000);
   });
+
+  it('(f) regressão: mensagem vinda de dead-letter (x-retry-count=3) ganha retries novos em api.video-deadletter', async () => {
+    const harness = createHarness('video-worker');
+    await startConsumer(harness, {
+      handle: () => Promise.reject(new RetryableError('garage fora')),
+    });
+    const event = newEvent('cid-dlx-retry-001');
+    await harness.publisher.publishEvent(event);
+    await waitFor(async () => (await messageCount(QUEUES.apiVideoDeadLetter)) === 1, {
+      timeoutMs: 20_000,
+      description: 'cópia em api.video-deadletter',
+    });
+
+    const api = createHarness('video-api');
+    const contexts: MessageContext[] = [];
+    await startConsumer(
+      api,
+      {
+        handle: (_event, context) => {
+          contexts.push(context);
+          return contexts.length === 1
+            ? Promise.reject(new RetryableError('postgres piscou'))
+            : Promise.resolve();
+        },
+      },
+      { queue: QUEUES.apiVideoDeadLetter },
+    );
+
+    await waitFor(
+      async () => (await consumedTotal(api, 'success', QUEUES.apiVideoDeadLetter)) === 1,
+      { timeoutMs: 10_000, description: 'sucesso depois de 1 retry' },
+    );
+    expect(contexts.map((c) => [c.retryCount, c.deathReason])).toEqual([
+      [0, 'rejected'],
+      [1, 'rejected'],
+    ]);
+    expect(await consumedTotal(api, 'retry', QUEUES.apiVideoDeadLetter)).toBe(1);
+    expect(await consumedTotal(api, 'dead_letter', QUEUES.apiVideoDeadLetter)).toBe(0);
+    expect(await messageCount(deadLetterQueueName(QUEUES.apiVideoDeadLetter))).toBe(0);
+  }, 60_000);
+
+  it('(g) dependência fora: devolve sem gastar retry nem delivery-limit e pausa até voltar', async () => {
+    const harness = createHarness();
+    const deliveries: MessageContext[] = [];
+    const runner = await startConsumer(
+      harness,
+      {
+        handle: (_event, context) => {
+          deliveries.push(context);
+          return deliveries.length <= 2
+            ? Promise.reject(new DependencyUnavailableError('postgres'))
+            : Promise.resolve();
+        },
+      },
+      { deps: { timings: { pauseInitialMs: 300, pauseMaxMs: 600 } } },
+    );
+
+    await harness.publisher.publishEvent(newEvent('cid-dependencia-001'));
+
+    await waitFor(async () => (await consumedTotal(harness, 'success')) === 1, {
+      timeoutMs: 15_000,
+      description: 'sucesso depois de a dependência voltar',
+    });
+    expect(deliveries.map((d) => d.retryCount)).toEqual([0, 0, 0]);
+    // nack(requeue=true) não conta no x-delivery-limit (RabbitMQ 4.3): nada de DLX por pausar.
+    expect(deliveries.map((d) => d.deliveryCount)).toEqual([0, 0, 0]);
+    expect(await consumedTotal(harness, 'deferred')).toBe(2);
+    expect(await consumedTotal(harness, 'retry')).toBe(0);
+    expect(await messageCount(retryQueueName(QUEUE, 1))).toBe(0);
+    expect(await messageCount(deadLetterQueueName(QUEUE))).toBe(0);
+    expect(runner.isConsuming).toBe(true);
+  }, 30_000);
+
+  it('(h) canal fechado no meio do job: nada é confirmado nem publicado e a reentrega espera o job antigo', async () => {
+    const harness = createHarness();
+    const log: string[] = [];
+    let calls = 0;
+    await startConsumer(harness, {
+      handle: async (_event, context) => {
+        calls += 1;
+        const call = calls;
+        log.push(`inicio-${call}`);
+        if (call === 1) {
+          // Job longo que só termina quando o canal cai (como o ffmpeg morto pelo abort).
+          await new Promise<void>((resolve) => {
+            context.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          await delay(300);
+          log.push(`fim-${call}`);
+          throw new RetryableError('ffmpeg morto pelo abort');
+        }
+        log.push(`fim-${call}`);
+      },
+    });
+
+    await harness.publisher.publishEvent(newEvent('cid-abort-001'));
+    await waitFor(() => calls === 1, { description: 'primeira entrega' });
+
+    harness.connection.manager.reconnect();
+
+    await waitFor(async () => (await consumedTotal(harness, 'success')) === 1, {
+      timeoutMs: 20_000,
+      description: 'reentrega processada',
+    });
+    expect(log).toEqual(['inicio-1', 'fim-1', 'inicio-2', 'fim-2']);
+    expect(await consumedTotal(harness, 'aborted')).toBe(1);
+    expect(await consumedTotal(harness, 'retry')).toBe(0);
+    expect(await messageCount(retryQueueName(QUEUE, 1))).toBe(0);
+    expect(await messageCount(QUEUE)).toBe(0);
+  }, 40_000);
+
+  it('(i) consumer cancelado pelo broker (fila apagada e recriada) volta sozinho', async () => {
+    const harness = createHarness();
+    const received: string[] = [];
+    const topology = buildTopology({ retryDelaysMs: RETRY_DELAYS_MS });
+    const runner = await startConsumer(
+      harness,
+      {
+        handle: (event) => {
+          received.push(event.correlationId);
+          return Promise.resolve();
+        },
+      },
+      {
+        deps: {
+          ensureTopology: () => setupTopology({ url: rabbit.url, topology }).then(() => undefined),
+          timings: { resubscribeInitialMs: 200 },
+        },
+      },
+    );
+
+    await inspect.deleteQueue(QUEUE);
+    await waitFor(() => !runner.isConsuming, { description: 'consumer cancelado' });
+    await waitFor(() => runner.isConsuming, {
+      timeoutMs: 15_000,
+      description: 'consumer re-assinado',
+    });
+
+    await harness.publisher.publishEvent(newEvent('cid-reassinado-001'));
+    await waitFor(() => received.includes('cid-reassinado-001'), {
+      description: 'mensagem consumida depois de re-assinar',
+    });
+    expect(runner.isHealthy).toBe(true);
+  }, 30_000);
 
   it('a topologia é idempotente: declarar de novo não falha', async () => {
     await expect(

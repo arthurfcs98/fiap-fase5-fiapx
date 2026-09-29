@@ -31,8 +31,8 @@ describe('classifyMediaToolError', () => {
 
   it.each<[MediaToolFailure, string]>([
     ['killed', 'FFMPEG_KILLED: terminated by SIGKILL'],
-    ['no_space', 'WORK_DIR_FULL: terminated by SIGKILL'],
     ['unavailable', 'FFMPEG_UNAVAILABLE: terminated by SIGKILL'],
+    ['aborted', 'FFMPEG_ABORTED: terminated by SIGKILL'],
   ])('%s is transient', (failure, reason) => {
     const error = classifyMediaToolError(
       new MediaToolError('ffmpeg', failure, 'terminated by SIGKILL'),
@@ -40,6 +40,18 @@ describe('classifyMediaToolError', () => {
     );
     expect(error).toBeInstanceOf(RetryableError);
     expect((error as RetryableError).reason).toBe(reason);
+  });
+
+  it('disk full is permanent P0006 (the frames of this video do not fit): no retries', () => {
+    const error = classifyMediaToolError(
+      new MediaToolError('ffmpeg', 'no_space', 'exit code 228: No space left on device'),
+      context,
+    );
+    expect(error).toBeInstanceOf(NonRetryableError);
+    expect(code(error)).toBe('P0006');
+    expect((error as NonRetryableError).appError.metadata).toEqual({
+      detail: 'WORK_DIR_FULL: exit code 228: No space left on device',
+    });
   });
 
   it('non-zero exit is P0001 with the diagnostic in the metadata', () => {

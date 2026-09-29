@@ -4,9 +4,12 @@ import { EVENT_TYPES } from '@fiapx/contracts';
  * Topologia RabbitMQ do FIAP X — fonte única em código.
  * Espelha docs/arquitetura/contratos.md (seção 2): mudar aqui = mudança coordenada.
  *
- * Na E2, o one-shot `rabbitmq-init` e o startup de cada serviço declaram exatamente o que
- * `buildTopology()` devolve (idempotente). Mudar um argumento de fila existente gera
- * PRECONDITION_FAILED de propósito (exige migração de fila).
+ * O startup de cada serviço declara exatamente o que `buildTopology()` devolve (idempotente);
+ * no K8s, o Job `rabbitmq-init` declara o mesmo antes, como administrador
+ * (`runTopologySetupCli`), porque os usuários por serviço só conseguem redeclarar. Mudar um
+ * argumento de fila existente gera PRECONDITION_FAILED de propósito (exige migração de fila:
+ * apagar a fila vazia, ou o volume do broker num ambiente sem dados). Fila ou binding novo:
+ * atualizar também as permissões em infra/k8s/base/data/rabbitmq/rabbitmq-init.mjs.
  */
 export const EXCHANGES = {
   /** topic: todos os eventos de domínio e de processamento. */
@@ -137,6 +140,16 @@ export function retryQueueArguments(
   };
 }
 
+/**
+ * DLQs: só quorum nos argumentos. Limite de tamanho, `overflow: reject-publish` (nunca
+ * descartar calado) e TTL de 7 dias (retenção LGPD) vêm da operator policy `fiapx-dlq-limits`
+ * do Job `rabbitmq-init` no K8s: política não é argumento de fila, então muda sem migração
+ * (sem PRECONDITION_FAILED num broker que já tem as filas).
+ */
+export function deadLetterQueueArguments(): Record<string, string | number> {
+  return { 'x-queue-type': 'quorum' };
+}
+
 /** Topologia completa: exchanges, filas principais + `.retry.1..3` + `.dlq`, e bindings. */
 export function buildTopology(options: TopologyOptions = {}): Topology {
   const retryDelaysMs = options.retryDelaysMs ?? RETRY_DELAYS_MS;
@@ -153,7 +166,7 @@ export function buildTopology(options: TopologyOptions = {}): Topology {
       });
     }
     const dlq = deadLetterQueueName(queue);
-    queues.push({ name: dlq, durable: true, arguments: { 'x-queue-type': 'quorum' } });
+    queues.push({ name: dlq, durable: true, arguments: deadLetterQueueArguments() });
 
     bindings.push(...MAIN_QUEUE_BINDINGS[queue]);
     bindings.push(bind(dlq, EXCHANGES.deadLetter, queue));

@@ -1,6 +1,8 @@
 import { Inject, Injectable, Logger, Module } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Registry } from '@prometheus-io/client';
+import type { HealthRegistry } from '../health/health-registry';
+import { HEALTH_REGISTRY } from '../health/health-registry';
 import { MetricsServerModule } from './metrics-server.module';
 import { METRICS_REGISTRY } from './metrics-server.options';
 import { MetricsServerService } from './metrics-server.service';
@@ -29,6 +31,13 @@ describe('MetricsServerService', () => {
     expect(await (await fetch(`${base}/metrics`)).text()).toContain(
       'service="notification-service"',
     );
+
+    const health = app.get<HealthRegistry>(HEALTH_REGISTRY);
+    health.register('consumidor', () => false);
+    const unhealthy = await fetch(`${base}/health`);
+    expect(unhealthy.status).toBe(503);
+    expect(await unhealthy.json()).toMatchObject({ status: 'unhealthy', failing: ['consumidor'] });
+    health.unregister('consumidor');
 
     service.onModuleDestroy();
     expect(service.isShuttingDown).toBe(true);

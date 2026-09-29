@@ -10,7 +10,8 @@ import { RecordingEventPublisher } from './recording-event-publisher';
 
 describe('construtores de mensagem para testes', () => {
   it('messageContext parte do envelope e aceita overrides', () => {
-    expect(messageContext(videoUploadedFixture, { retryCount: 2 })).toEqual({
+    const { signal, ...context } = messageContext(videoUploadedFixture, { retryCount: 2 });
+    expect(context).toEqual({
       queue: 'test.queue',
       messageId: videoUploadedFixture.id,
       correlationId: videoUploadedFixture.correlationId,
@@ -20,6 +21,8 @@ describe('construtores de mensagem para testes', () => {
       deathReason: undefined,
       headers: {},
     });
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal.aborted).toBe(false);
   });
 
   it('consumeMessageFor + RecordingAckChannel exercitam o ConsumerRunner de ponta a ponta', async () => {

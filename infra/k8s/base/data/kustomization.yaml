@@ -34,6 +34,8 @@ configMapGenerator:
   - name: rabbitmq-config
     files:
       - rabbitmq/30-fiapx.conf
+      # Cópia de infra/rabbitmq/enabled_plugins (mesma conferência no validate.sh).
+      - rabbitmq/enabled_plugins
   # Cópia de infra/garage/garage.toml (mesma conferência no validate.sh).
   - name: garage-config
     files:

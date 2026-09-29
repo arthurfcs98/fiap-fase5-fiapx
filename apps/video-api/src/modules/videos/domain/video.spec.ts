@@ -115,6 +115,21 @@ describe('Video (state machine, contratos.md section 3)', () => {
     expect(video.toSnapshot().attempts).toBe(4);
   });
 
+  it('start time: a worker failure from QUEUED records it; a dead-letter never invents it', () => {
+    const failedByWorker = aVideo({ status: 'QUEUED' });
+    failedByWorker.fail(failure, LATER, 1);
+    expect(failedByWorker.toSnapshot().startedAt).toEqual(LATER);
+
+    const deadLettered = aVideo({ status: 'QUEUED' });
+    deadLettered.fail({ errorCode: 'P0099', errorMessage: 'x' }, LATER);
+    expect(deadLettered.toSnapshot().startedAt).toBeNull();
+
+    const started = aVideo({ status: 'PROCESSING', startedAt: NOW });
+    started.fail(failure, LATER, 2);
+    started.toSnapshot();
+    expect(started.toSnapshot().startedAt).toEqual(NOW);
+  });
+
   it.each([
     ['COMPLETED', 'complete'],
     ['COMPLETED', 'fail'],

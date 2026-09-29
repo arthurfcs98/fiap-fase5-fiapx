@@ -25,6 +25,7 @@ describe('workerConfigSchema', () => {
       WORK_DIR: '/work',
       FFMPEG_TIMEOUT_MS: 600_000,
       MAX_VIDEO_DURATION_S: 600,
+      MAX_FRAMES_MB: 1536,
     });
   });
 
@@ -35,12 +36,14 @@ describe('workerConfigSchema', () => {
       WORK_DIR: '/tmp/fiapx-work',
       FFMPEG_TIMEOUT_MS: '120000',
       MAX_VIDEO_DURATION_S: '90.5',
+      MAX_FRAMES_MB: '900',
     });
     expect(config).toMatchObject({
       WORKER_PREFETCH: 2,
       WORK_DIR: '/tmp/fiapx-work',
       FFMPEG_TIMEOUT_MS: 120_000,
       MAX_VIDEO_DURATION_S: 90.5,
+      MAX_FRAMES_MB: 900,
     });
   });
 

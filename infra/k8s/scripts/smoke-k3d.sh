@@ -195,8 +195,8 @@ curl -s http://127.0.0.1:19090/api/v1/targets > "$WORK/targets.json"
 jq -r '.data.activeTargets | group_by(.labels.job)[] | "\(.[0].labels.job): \(map(.health) | join(","))"' "$WORK/targets.json" \
   | sed 's/^/    /'
 rules=$(curl -s http://127.0.0.1:19090/api/v1/rules | jq '[.data.groups[].rules[]] | length')
-log "regras carregadas: $rules (esperado: 26 = 18 de gravação + 8 alertas)"
-[[ $rules == 26 ]] || die "número de regras inesperado"
+log "regras carregadas: $rules (esperado: 31 = 21 de gravação + 10 alertas)"
+[[ $rules == 31 ]] || die "número de regras inesperado"
 down=$(jq -r '[.data.activeTargets[] | select(.health != "up") | "\(.labels.job)/\(.labels.pod // .labels.instance): \(.lastError)"] | join("\n")' "$WORK/targets.json")
 if [[ -n $down ]]; then
   log "AVISO: alvos fora:"
@@ -256,7 +256,7 @@ done
 ((ghealth)) || die "Grafana /api/health não respondeu em 60 s"
 dashboards=$(curl -s -u "admin:$gpass" 'http://127.0.0.1:13000/api/search?type=dash-db' | jq -r '[.[].title] | join(" | ")')
 log "dashboards: $dashboards"
-[[ $dashboards == *"FIAP X — Pipeline de vídeos"* && $dashboards == *"FIAP X — SLOs"* ]] || die "dashboards ausentes"
+[[ $dashboards == *"FIAP Frames — Pipeline de vídeos"* && $dashboards == *"FIAP Frames — SLOs"* ]] || die "dashboards ausentes"
 datasources=$(curl -s -u "admin:$gpass" http://127.0.0.1:13000/api/datasources | jq -r '[.[].name] | join(",")')
 log "datasources: $datasources"
 for uid in prometheus loki; do
@@ -274,6 +274,23 @@ queues=$(curl -s -u "fiapx:$rpass" 'http://127.0.0.1:15673/api/queues/%2F?column
 log "filas no vhost /: $queues"
 policy=$(curl -s -u "fiapx:$rpass" http://127.0.0.1:15673/api/operator-policies/%2F/fiapx-limits | jq -c '.definition')
 log "operator policy fiapx-limits: $policy"
+# Um usuário por serviço, sem tag (sem management), e nenhum app conectado como o admin.
+for user in fiapx-api fiapx-worker fiapx-notification; do
+  utags=$(curl -s -u "fiapx:$rpass" "http://127.0.0.1:15673/api/users/$user" | jq -r '.tags | if type == "array" then join(",") else . end')
+  [[ -z $utags ]] || die "usuário $user com tags ($utags): não deveria acessar o management"
+done
+conn_users=$(curl -s -u "fiapx:$rpass" 'http://127.0.0.1:15673/api/connections?columns=user' | jq -r '[.[].user] | unique | join(",")')
+log "conexões AMQP por usuário: $conn_users"
+for user in fiapx-api fiapx-worker fiapx-notification; do
+  [[ ",$conn_users," == *",$user,"* ]] || die "nenhuma conexão AMQP do usuário $user"
+done
+[[ ",$conn_users," != *",fiapx,"* ]] || die "algum app ainda conecta como o administrador fiapx"
+dlqpol=$(curl -s -u "fiapx:$rpass" 'http://127.0.0.1:15673/api/queues/%2F/notification.events.dlq' | jq -r '.operator_policy')
+[[ $dlqpol == fiapx-dlq-limits ]] || die "DLQ sem a operator policy fiapx-dlq-limits (veio: $dlqpol)"
+log "DLQs com a operator policy fiapx-dlq-limits (TTL 7 dias, reject-publish)"
+shovel=$(curl -s -o /dev/null -w '%{http_code}' -u "fiapx:$rpass" 'http://127.0.0.1:15673/api/shovels/%2F')
+[[ $shovel == 200 ]] || die "plugin de shovel ausente (GET /api/shovels respondeu $shovel)"
+log "plugin de shovel ativo (redrive das DLQs pelo management)"
 # Escala pelo KEDA: com a fila sem consumidor (imagem de esqueleto), 3 mensagens na fila
 # levam o HPA do KEDA a 2 réplicas. Com o worker de verdade consumindo, o teste é pulado (as
 # mensagens seriam consumidas antes da leitura do KEDA).

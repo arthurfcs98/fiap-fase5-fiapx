@@ -1,9 +1,14 @@
-import { RetryableError } from '@fiapx/common';
+import { DependencyUnavailableError, RetryableError } from '@fiapx/common';
 import type { CreateEmailResponse } from 'resend';
 import { EmailRejectedError } from '../../domain/email-rejected.error';
 import type { EmailMessage } from '../../domain/ports/email-sender.port';
 import type { ResendEmailsApi, ResendErrorLike } from './resend-email-sender';
-import { isTransientResendError, ResendEmailSender, resendFailure } from './resend-email-sender';
+import {
+  isResendOutage,
+  isTransientResendError,
+  ResendEmailSender,
+  resendFailure,
+} from './resend-email-sender';
 
 const MESSAGE: EmailMessage = {
   idempotencyKey: '00000000-0000-4000-8000-000000000001',
@@ -54,8 +59,13 @@ describe('ResendEmailSender', () => {
       ),
     );
 
-    await expect(sender(send).send(MESSAGE)).rejects.toThrow(
-      new RetryableError('Resend rate_limit_exceeded (429): Too many requests'),
+    const error = await sender(send)
+      .send(MESSAGE)
+      .catch((e: unknown) => e);
+    // Throttled by Resend: an outage of the provider (the consumer pauses, no retry spent).
+    expect(error).toBeInstanceOf(DependencyUnavailableError);
+    expect((error as DependencyUnavailableError).reason).toBe(
+      'DEPENDENCY_UNAVAILABLE (resend): rate_limit_exceeded (429): Too many requests',
     );
   });
 
@@ -80,8 +90,12 @@ describe('ResendEmailSender', () => {
   it('turns a missing answer into a retryable timeout (idempotency key covers a late send)', async () => {
     const send = jest.fn(() => new Promise<CreateEmailResponse>(() => undefined));
 
-    await expect(sender(send, 15).send(MESSAGE)).rejects.toThrow(
-      new RetryableError('Resend did not answer within 15 ms'),
+    const error = await sender(send, 15)
+      .send(MESSAGE)
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(DependencyUnavailableError);
+    expect((error as DependencyUnavailableError).reason).toBe(
+      'DEPENDENCY_UNAVAILABLE (resend): no answer within 15 ms',
     );
   });
 
@@ -123,10 +137,26 @@ describe('Resend error classification', () => {
     expect(failure).toBeInstanceOf(transient ? RetryableError : EmailRejectedError);
   });
 
+  it.each([
+    [null, true],
+    [408, true],
+    [429, true],
+    [500, true],
+    [503, true],
+    [409, false],
+    [422, false],
+  ] as const)('status %p → provider outage=%p', (statusCode, outage) => {
+    expect(isResendOutage({ statusCode })).toBe(outage);
+    const failure = resendFailure({ name: 'x', statusCode, message: 'm' });
+    expect(failure instanceof DependencyUnavailableError).toBe(outage);
+  });
+
   it('says "no response" when there was no HTTP status', () => {
     expect(
       resendFailure({ name: 'application_error', statusCode: null, message: 'Unable to fetch' })
         .message,
-    ).toBe('Falha transitória: Resend application_error (no response): Unable to fetch');
+    ).toBe(
+      'Falha transitória: DEPENDENCY_UNAVAILABLE (resend): application_error (no response): Unable to fetch',
+    );
   });
 });

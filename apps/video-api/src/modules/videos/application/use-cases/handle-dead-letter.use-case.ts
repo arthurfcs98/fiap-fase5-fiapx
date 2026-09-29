@@ -1,6 +1,6 @@
 import { ProcessingErrors } from '@fiapx/common';
 import type { VideoUploadedEvent } from '@fiapx/contracts';
-import { QUEUES } from '@fiapx/messaging';
+import { MAX_RETRIES, QUEUES } from '@fiapx/messaging';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { UnitOfWork } from '../../../../shared/application/unit-of-work';
 import { UNIT_OF_WORK } from '../../../../shared/application/unit-of-work';
@@ -17,10 +17,16 @@ export const DEAD_LETTER_CONSUMER = QUEUES.apiVideoDeadLetter;
 
 export type DeadLetterOutcome = 'failed' | 'already-terminal' | 'duplicate' | 'unknown-video';
 
+/** Dead-letter reason of a `nack(requeue=false)` of the worker: its retries were exhausted. */
+export const RETRIES_EXHAUSTED_REASON = 'rejected';
+
 /**
- * Consumer of `api.video-deadletter` (copy of every `video.uploaded` that died in the worker:
- * retries exhausted or crash loop). The video ends in FAILED `P0099 PROCESSING_ABORTED` with a
- * `video.failed` in the outbox, so the user always reaches a terminal state and gets the e-mail.
+ * Consumer of `api.video-deadletter` (copy of every `video.uploaded` that died in the worker).
+ * The video ends in FAILED with a `video.failed` in the outbox, so the user always reaches a
+ * terminal state and gets the e-mail:
+ * - `P0098 RETRIES_EXHAUSTED` when the worker gave up after its retries (death reason
+ *   `rejected`);
+ * - `P0099 PROCESSING_ABORTED` otherwise (crash loop: `delivery_limit`, or unknown).
  * A video already COMPLETED/FAILED is left as is.
  */
 @Injectable()
@@ -40,7 +46,10 @@ export class HandleDeadLetterUseCase {
     deathReason?: string,
   ): Promise<DeadLetterOutcome> {
     const now = this.clock.now();
-    const aborted = ProcessingErrors.PROCESSING_ABORTED().appError;
+    const aborted =
+      deathReason === RETRIES_EXHAUSTED_REASON
+        ? ProcessingErrors.RETRIES_EXHAUSTED(MAX_RETRIES + 1).appError
+        : ProcessingErrors.PROCESSING_ABORTED().appError;
     const { outcome, video } = await this.uow.run(
       async (tx): Promise<{ outcome: DeadLetterOutcome; video?: Video }> => {
         const firstDelivery = await tx.processedMessages.markProcessed(
@@ -55,7 +64,9 @@ export class HandleDeadLetterUseCase {
           { errorCode: aborted.code, errorMessage: aborted.description },
           now,
           undefined,
-          `Processamento abortado após dead-letter (${aborted.code})`,
+          deathReason === RETRIES_EXHAUSTED_REASON
+            ? `Tentativas esgotadas no worker (${aborted.code})`
+            : `Processamento abortado após dead-letter (${aborted.code})`,
         );
         if (!transition) return { outcome: 'already-terminal', video: locked };
         await recordTransition(tx, locked, transition, event.correlationId, now);

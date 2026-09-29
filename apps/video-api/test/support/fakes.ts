@@ -248,6 +248,28 @@ export class InMemoryVideoRepository implements VideoRepository {
     return Promise.resolve(ids);
   }
 
+  countPendingByOwner(userId: string): Promise<number> {
+    return Promise.resolve(
+      this.ownedBy(userId).filter((v) => v.status === 'QUEUED' || v.status === 'PROCESSING').length,
+    );
+  }
+
+  statusesOf(ids: readonly string[]): Promise<Map<string, VideoSnapshot['status']>> {
+    const found = ids.flatMap((id) => {
+      const snapshot = this.videos.get(id);
+      return snapshot ? [[id, snapshot.status] as const] : [];
+    });
+    return Promise.resolve(new Map(found));
+  }
+
+  sumStoredZipBytes(): Promise<number> {
+    return Promise.resolve(
+      [...this.videos.values()]
+        .filter((v) => v.zipKey !== null && v.expiredAt === null)
+        .reduce((sum, v) => sum + (v.zipSizeBytes ?? 0), 0),
+    );
+  }
+
   snapshot(id: string): VideoSnapshot | undefined {
     return this.videos.get(id);
   }
@@ -352,14 +374,16 @@ export class FakeUnitOfWork implements UnitOfWork {
 export class RecordingVideoMetrics implements VideoMetrics {
   uploadedCount = 0;
   completedCount = 0;
+  readonly turnarounds: number[] = [];
   readonly failures: string[] = [];
 
   uploaded(): void {
     this.uploadedCount += 1;
   }
 
-  completed(): void {
+  completed(turnaroundSeconds: number): void {
     this.completedCount += 1;
+    this.turnarounds.push(turnaroundSeconds);
   }
 
   failed(errorCode: string): void {

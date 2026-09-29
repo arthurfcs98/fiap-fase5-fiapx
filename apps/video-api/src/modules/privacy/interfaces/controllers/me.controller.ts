@@ -22,6 +22,9 @@ import { ExportMyDataUseCase } from '../../application/use-cases/export-my-data.
 import type { DeleteAccountRequest } from '../dto/privacy.dto';
 import { DeleteAccountRequestDto, deleteAccountSchema } from '../dto/privacy.dto';
 
+/** Name of the data export file (the frontend adds the date to its own copy). */
+export const EXPORT_FILE_NAME = 'fiap-frames-meus-dados.json';
+
 /** Data subject rights (LGPD art. 18, contratos.md section 12). */
 @ApiTags('privacidade (LGPD)')
 @ApiBearerAuth(BEARER_AUTH)
@@ -34,7 +37,8 @@ export class MeController {
 
   @Get('data')
   @Header('Cache-Control', 'no-store')
-  @Header('Content-Disposition', 'attachment; filename="fiapx-meus-dados.json"')
+  // Brand visible to the user (contratos.md, section 14): "FIAP Frames", as the frontend does.
+  @Header('Content-Disposition', `attachment; filename="${EXPORT_FILE_NAME}"`)
   @ApiOperation({
     summary: 'Acesso e portabilidade: exporta todos os meus dados (JSON)',
     description: 'Usuário (sem o hash da senha), todos os vídeos e o histórico de status.',

@@ -1,5 +1,6 @@
 import { execFile, spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { closeSync, openSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 
@@ -92,6 +93,43 @@ export async function writeCorruptMp4(path: string): Promise<void> {
     Buffer.from('isomiso2avc1mp41'),
   ]);
   await writeFile(path, Buffer.concat([ftyp, randomBytes(64 * 1024)]));
+}
+
+/**
+ * MKV written to a PIPE (non-seekable output): the muxer cannot go back to write the duration,
+ * so ffprobe reports none. Used to prove that the frame cap, not the header, bounds the job.
+ */
+export function generateStreamedMkv(path: string, durationS: number): void {
+  const fd = openSync(path, 'w');
+  try {
+    const result = spawnSync(
+      'ffmpeg',
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-nostdin',
+        '-f',
+        'lavfi',
+        '-i',
+        `testsrc=duration=${durationS}:size=64x64:rate=1`,
+        '-pix_fmt',
+        'yuv420p',
+        '-f',
+        'matroska',
+        'pipe:1',
+      ],
+      { stdio: ['ignore', fd, 'inherit'] },
+    );
+    if (result.status !== 0) throw new Error(`ffmpeg failed to write ${path}`);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Width and height of a PNG (IHDR, bytes 16-23). */
+export function pngSize(png: Buffer): { width: number; height: number } {
+  return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
 }
 
 /** PNG file signature. */

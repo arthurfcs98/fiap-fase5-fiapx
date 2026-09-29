@@ -59,6 +59,25 @@ describe('MetricsServer', () => {
     });
   });
 
+  it('/health responde 503 unhealthy com as verificações internas que falham', async () => {
+    await withServer({ failingChecks: () => ['consumer:worker.video-uploaded'] }, async (base) => {
+      const res = await fetch(`${base}/health`);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({
+        status: 'unhealthy',
+        service: 'video-worker',
+        version: 'sha-abc1234',
+        failing: ['consumer:worker.video-uploaded'],
+      });
+    });
+  });
+
+  it('/health fica 200 quando as verificações internas passam', async () => {
+    await withServer({ failingChecks: () => [] }, async (base) => {
+      expect((await fetch(`${base}/health`)).status).toBe(200);
+    });
+  });
+
   it('GET /metrics expõe o registry no formato Prometheus', async () => {
     await withServer({}, async (base) => {
       const res = await fetch(`${base}/metrics`);

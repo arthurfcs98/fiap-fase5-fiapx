@@ -156,19 +156,34 @@ function checkPod(owner, spec) {
   }
 }
 
-/** Recursos efetivos de um pod (LimitRange preenche o que faltar). */
-function podResources(spec) {
+/** Recursos de um container (LimitRange preenche o que faltar). */
+function containerResources(c) {
   const d = containerLimits;
+  const req = c.resources?.requests ?? {};
+  const lim = c.resources?.limits ?? {};
+  return {
+    cpuReq: cpu(req.cpu ?? d.defaultRequest.cpu),
+    cpuLim: cpu(lim.cpu ?? d.default.cpu),
+    memReq: bytes(req.memory ?? d.defaultRequest.memory),
+    memLim: bytes(lim.memory ?? d.default.memory),
+    ephReq: bytes(req['ephemeral-storage'] ?? d.defaultRequest['ephemeral-storage']),
+    ephLim: bytes(lim['ephemeral-storage'] ?? d.default['ephemeral-storage']),
+  };
+}
+
+/**
+ * Recursos efetivos de um pod, como a quota conta: por recurso, o maior entre a soma dos
+ * containers e cada initContainer (que rodam um de cada vez, antes).
+ */
+function podResources(spec) {
   const sum = { cpuReq: 0, cpuLim: 0, memReq: 0, memLim: 0, ephReq: 0, ephLim: 0 };
   for (const c of spec.containers) {
-    const req = c.resources?.requests ?? {};
-    const lim = c.resources?.limits ?? {};
-    sum.cpuReq += cpu(req.cpu ?? d.defaultRequest.cpu);
-    sum.cpuLim += cpu(lim.cpu ?? d.default.cpu);
-    sum.memReq += bytes(req.memory ?? d.defaultRequest.memory);
-    sum.memLim += bytes(lim.memory ?? d.default.memory);
-    sum.ephReq += bytes(req['ephemeral-storage'] ?? d.defaultRequest['ephemeral-storage']);
-    sum.ephLim += bytes(lim['ephemeral-storage'] ?? d.default['ephemeral-storage']);
+    const r = containerResources(c);
+    for (const k of Object.keys(sum)) sum[k] += r[k];
+  }
+  for (const c of spec.initContainers ?? []) {
+    const r = containerResources(c);
+    for (const k of Object.keys(sum)) sum[k] = Math.max(sum[k], r[k]);
   }
   return sum;
 }
@@ -234,8 +249,9 @@ const worker = byKindName.get('Deployment/video-worker');
 const notification = byKindName.get('Deployment/notification-service');
 if (api?.spec.progressDeadlineSeconds !== 180) fail('Deployment/video-api: progressDeadlineSeconds != 180 (regra 5)');
 if (notification?.spec.progressDeadlineSeconds !== 180) fail('Deployment/notification-service: progressDeadlineSeconds != 180 (regra 5)');
-if (worker?.spec.progressDeadlineSeconds !== 480) fail('Deployment/video-worker: progressDeadlineSeconds != 480 (regra 5)');
-if ((worker?.spec.template.spec.terminationGracePeriodSeconds ?? 0) < 330) fail('Deployment/video-worker: terminationGracePeriodSeconds < 330');
+if (worker?.spec.progressDeadlineSeconds !== 900) fail('Deployment/video-worker: progressDeadlineSeconds != 900 (regra 5)');
+// O shutdown do worker espera o vídeo inteiro: ffprobe 30 s + ffmpeg 600 s + transferências 60 s.
+if ((worker?.spec.template.spec.terminationGracePeriodSeconds ?? 0) < 720) fail('Deployment/video-worker: terminationGracePeriodSeconds < 720');
 if (worker?.spec.strategy?.type !== 'Recreate') fail('Deployment/video-worker: estratégia != Recreate (D5)');
 if (notification?.spec.strategy?.type !== 'Recreate') fail('Deployment/notification-service: estratégia != Recreate (D5)');
 

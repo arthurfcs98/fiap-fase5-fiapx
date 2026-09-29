@@ -16,7 +16,11 @@ import type {
   PutResult,
   PutStreamInput,
 } from './object-storage.port';
-import { ObjectNotFoundError, ObjectStorageError } from './object-storage.port';
+import {
+  ObjectNotFoundError,
+  ObjectStorageError,
+  StorageQuotaExceededError,
+} from './object-storage.port';
 
 export interface S3ClientOptions {
   /** `S3_ENDPOINT` (ex.: `http://garage:3900`). */
@@ -117,6 +121,9 @@ export class S3ObjectStorage implements IObjectStorage {
       const output = await upload.done();
       return { sizeBytes, etag: output.ETag };
     } catch (error) {
+      if (isQuotaExceeded(error)) {
+        throw new StorageQuotaExceededError('put', bucket, key, { cause: error });
+      }
       throw new ObjectStorageError('put', bucket, key, { cause: error });
     } finally {
       input.signal?.removeEventListener('abort', onAbort);
@@ -201,6 +208,19 @@ function toStorageError(
 ): Error {
   if (isNotFound(error)) return new ObjectNotFoundError(bucket, key);
   return new ObjectStorageError(operation, bucket, key, { cause: error });
+}
+
+/**
+ * Quota do bucket estourada. O Garage responde `403 AccessDenied` com a mensagem "Bucket size
+ * quota is reached" (no PutObject, no UploadPart ou no CompleteMultipartUpload); o `Upload` do
+ * lib-storage pode repassar o erro do SDK direto ou dentro de `cause`.
+ */
+export function isQuotaExceeded(error: unknown, depth = 0): boolean {
+  if (depth > 3 || typeof error !== 'object' || error === null) return false;
+  const candidate = error as { message?: unknown; Code?: unknown; cause?: unknown };
+  const text = [candidate.message, candidate.Code].filter((v) => typeof v === 'string').join(' ');
+  if (/quota/i.test(text)) return true;
+  return isQuotaExceeded(candidate.cause, depth + 1);
 }
 
 export function isNotFound(error: unknown): boolean {

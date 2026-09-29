@@ -4,9 +4,10 @@
 # - Réplicas: SEM "replicas" (regra 4 do deploy.sh): o KEDA (scaledobject.yaml) é o dono, 1-2.
 # - Recreate (decisão D5 do infra/vm/README.md): pod em terminação conta na quota até o fim do
 #   grace; com rolling update, velho + novo somariam. A fila segura as mensagens nesse meio tempo.
-# - terminationGracePeriodSeconds 330 > shutdown do app (300 s): o SIGTERM para de consumir e
-#   deixa o vídeo em andamento terminar (contratos.md, seção 9). progressDeadlineSeconds 480
-#   precisa ser maior que o grace (regra 5 do deploy.sh).
+# - terminationGracePeriodSeconds 720 > shutdown do app (690 s = ffprobe 30 + ffmpeg 600 +
+#   transferências 60): o SIGTERM para de consumir e deixa o vídeo em andamento terminar INTEIRO
+#   (contratos.md, seção 9). progressDeadlineSeconds 900 precisa ser maior que o grace (regra 5
+#   do deploy.sh), e o ROLLOUT_TIMEOUT do deploy.sh maior que os dois.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,7 +17,7 @@ metadata:
     app.kubernetes.io/component: worker
 spec:
   revisionHistoryLimit: 3
-  progressDeadlineSeconds: 480
+  progressDeadlineSeconds: 900
   strategy:
     type: Recreate
   selector:
@@ -36,7 +37,7 @@ spec:
       priorityClassName: fiapx-lote      # primeiro a sair sob pressão: a mensagem volta para a fila
       automountServiceAccountToken: false
       enableServiceLinks: false
-      terminationGracePeriodSeconds: 330
+      terminationGracePeriodSeconds: 720
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000

@@ -2,9 +2,13 @@
 #
 # - O nome do nó é rabbit@rabbitmq-0 (hostname estável do StatefulSet): as filas "moram" no
 #   diretório desse nome dentro do volume, então ele não pode mudar entre reinícios.
-# - Plugins: a imagem -management já habilita rabbitmq_management e rabbitmq_prometheus.
-# - Usuário "fiapx" criado no primeiro boot (RABBITMQ_DEFAULT_*); o usuário do KEDA
-#   (fiapx-keda, só monitoramento) e os limites por fila vêm do Job rabbitmq-init.
+# - Plugins (enabled_plugins, cópia de infra/rabbitmq/enabled_plugins): os da imagem -management
+#   (rabbitmq_management, rabbitmq_prometheus) + shovel e a página dele no management, que dá o
+#   "Move messages" do redrive das DLQs (docs/observabilidade.md).
+# - Usuário "fiapx" (administrador) criado no primeiro boot (RABBITMQ_DEFAULT_*): só o Job
+#   rabbitmq-init o usa. Os apps usam um usuário cada (fiapx-api, fiapx-worker,
+#   fiapx-notification, permissões mínimas) e o KEDA o fiapx-keda (só monitoramento), todos
+#   criados pelo Job, que também aplica os limites por fila.
 # - Probes por TCP: "rabbitmq-diagnostics" sobe outra VM Erlang (~80 MiB) a cada execução,
 #   o que arriscaria OOM dentro do limite de 512 MiB.
 apiVersion: apps/v1
@@ -69,6 +73,10 @@ spec:
             - name: config
               mountPath: /etc/rabbitmq/conf.d/30-fiapx.conf
               subPath: 30-fiapx.conf
+              readOnly: true
+            - name: config
+              mountPath: /etc/rabbitmq/enabled_plugins
+              subPath: enabled_plugins
               readOnly: true
           resources:
             requests:

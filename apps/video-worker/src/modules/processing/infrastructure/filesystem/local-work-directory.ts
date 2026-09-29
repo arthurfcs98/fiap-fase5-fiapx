@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { constants, createWriteStream } from 'node:fs';
-import { access, lstat, mkdir, readdir, rm, stat } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { access, lstat, mkdir, readdir, rm, rmdir, stat } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import type { FrameFile } from '../../domain/frames';
@@ -12,7 +13,9 @@ const JOB_DIR_NAME = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const SOURCE_EXTENSION = /^[a-z0-9]{1,5}$/;
 
 /**
- * {@link IWorkDirectory} on the local filesystem: `<root>/<videoId>/{source.<ext>, frames/}`.
+ * {@link IWorkDirectory} on the local filesystem: `<root>/<videoId>/<runId>/{source.<ext>, frames/}`.
+ * Every run (attempt) gets its OWN folder: a redelivery of the same message never deletes or
+ * mixes files with a run still finishing (e.g. the job of a delivery whose channel closed).
  * The root is resolved to an absolute path, so ffmpeg never sees a relative or option-like
  * argument.
  */
@@ -35,9 +38,7 @@ export class LocalWorkDirectory implements IWorkDirectory {
     if (!JOB_DIR_NAME.test(videoId)) {
       throw new Error(`videoId is not a UUID, refusing to use it as a path: "${videoId}"`);
     }
-    const dir = join(this.root, videoId);
-    // Leftovers of an attempt that died mid-job (redelivered message) would mix old frames in.
-    await rm(dir, { recursive: true, force: true });
+    const dir = join(this.root, videoId, randomUUID());
     const framesDir = join(dir, 'frames');
     await mkdir(framesDir, { recursive: true });
     const extension = sourceExtension.replace(/^\./, '').toLowerCase();
@@ -57,6 +58,13 @@ export class LocalWorkDirectory implements IWorkDirectory {
 
   async remove(workspace: JobWorkspace): Promise<void> {
     await rm(workspace.dir, { recursive: true, force: true });
+    // `<root>/<videoId>` goes away only when no other run of the same video is using it.
+    try {
+      await rmdir(dirname(workspace.dir));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== 'ENOTEMPTY' && code !== 'EEXIST' && code !== 'ENOENT') throw error;
+    }
   }
 
   async sweepStale(maxAgeMs: number): Promise<string[]> {
@@ -72,7 +80,8 @@ export class LocalWorkDirectory implements IWorkDirectory {
     for (const name of names.filter((entry) => JOB_DIR_NAME.test(entry))) {
       const path = join(this.root, name);
       try {
-        if ((await lstat(path)).mtimeMs > threshold) continue;
+        // maxAgeMs <= 0: everything is a leftover (filesystem clocks may run ahead of Date.now).
+        if (maxAgeMs > 0 && (await lstat(path)).mtimeMs > threshold) continue;
         await rm(path, { recursive: true, force: true });
         removed.push(name);
       } catch (error) {

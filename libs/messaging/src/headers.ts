@@ -1,9 +1,18 @@
-/** Headers AMQP padronizados. */
+/** Headers AMQP padronizados (contratos.md, seção 2). */
 export const MESSAGE_HEADERS = {
   correlationId: 'x-correlation-id',
   retryCount: 'x-retry-count',
   lastError: 'x-last-error',
+  /**
+   * Motivo do dead-letter que trouxe a mensagem para a fila atual (`rejected`,
+   * `delivery_limit`...), guardado na cópia de retry: o `x-death` da cópia é zerado de propósito
+   * e, ao voltar da `.retry.N`, o broker registra só `expired`.
+   */
+  originDeathReason: 'x-origin-death-reason',
 } as const;
+
+/** Motivo de dead-letter das filas `.retry.N` (TTL): não inicia um ciclo novo de retries. */
+export const RETRY_EXPIRED_REASON = 'expired';
 
 const LAST_ERROR_MAX_LENGTH = 256;
 
@@ -14,6 +23,32 @@ export function readRetryCount(headers: MessageHeaders | undefined): number {
   const raw = headers?.[MESSAGE_HEADERS.retryCount];
   const value = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+/**
+ * Retries já feitos NO CICLO ATUAL da mensagem. O `x-retry-count` vale enquanto ela circula
+ * entre a fila e as `.retry.N` (volta delas com `x-last-death-reason=expired`). Uma mensagem que
+ * chegou por dead-letter (`rejected`, `delivery_limit`, ex.: em `api.video-deadletter`) ou por
+ * redrive de uma DLQ começa um ciclo NOVO (0): o `x-retry-count` herdado é da fila de origem, e
+ * sem isso a primeira falha transitória iria direto para a DLQ.
+ */
+export function effectiveRetryCount(headers: MessageHeaders | undefined): number {
+  const reason = readLastDeathReason(headers);
+  if (reason !== undefined && reason !== RETRY_EXPIRED_REASON) return 0;
+  return readRetryCount(headers);
+}
+
+/**
+ * Motivo do dead-letter que trouxe a mensagem ao ciclo atual: o `x-last-death-reason` quando não
+ * é `expired`; depois de um retry (a cópia volta da `.retry.N` como `expired`), o
+ * `x-origin-death-reason` gravado na cópia; senão o próprio `x-last-death-reason` (ou nada).
+ */
+export function readOriginDeathReason(headers: MessageHeaders | undefined): string | undefined {
+  const last = readLastDeathReason(headers);
+  if (last !== undefined && last !== RETRY_EXPIRED_REASON) return last;
+  const origin = headers?.[MESSAGE_HEADERS.originDeathReason];
+  if (typeof origin === 'string' && origin.length > 0) return origin;
+  return last;
 }
 
 /**

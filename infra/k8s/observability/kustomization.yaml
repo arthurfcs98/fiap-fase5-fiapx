@@ -1,7 +1,7 @@
 # =============================================================================
 # infra/k8s/observability — os três sinais (contratos.md, seção 13), no namespace fiapx:
 #
-#   métricas  Prometheus (kubernetes_sd por anotação, regras de SLO e 8 alertas)
+#   métricas  Prometheus (kubernetes_sd por anotação, regras de SLO e 10 alertas)
 #   logs      Grafana Alloy (lê os logs pela API) -> Loki (single binary, 72 h)
 #   visual    Grafana (datasources Prometheus + Loki, dashboards provisionados)
 #

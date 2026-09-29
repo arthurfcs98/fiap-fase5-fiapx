@@ -1,7 +1,11 @@
 import type { ExecutionContext } from '@nestjs/common';
-import { applyDecorators, SetMetadata, UseGuards } from '@nestjs/common';
-import type { ThrottlerGetTrackerFunction, ThrottlerOptions } from '@nestjs/throttler';
-import { ThrottlerGuard } from '@nestjs/throttler';
+import { applyDecorators, Injectable, SetMetadata, UseGuards } from '@nestjs/common';
+import type {
+  ThrottlerGetTrackerFunction,
+  ThrottlerLimitDetail,
+  ThrottlerOptions,
+} from '@nestjs/throttler';
+import { normalizeIp, ThrottlerGuard } from '@nestjs/throttler';
 
 /** Throttled routes (contratos.md, section 8: register, login 5/min, upload; section 12). */
 export const THROTTLE_NAMES = ['register', 'login', 'upload', 'accountDeletion'] as const;
@@ -25,6 +29,16 @@ export const DEFAULT_THROTTLE_LIMITS: ThrottleLimits = {
   accountDeletion: 5,
 };
 
+/**
+ * Login attempts per minute per client IP, WHATEVER the e-mail (`THROTTLE_LOGIN_IP_LIMIT`).
+ * The per IP + e-mail limit alone lets one IP rotate e-mails and burn ~230 ms of bcrypt per
+ * request: this second counter bounds that CPU.
+ */
+export const DEFAULT_LOGIN_IP_LIMIT = 30;
+
+/** IPv6 clients are grouped by /64 (one subscriber usually gets a whole /64). */
+export const IPV6_SUBNET_PREFIX = 64;
+
 /** Window of each throttle, in milliseconds. */
 export const THROTTLE_WINDOWS_MS: Readonly<Record<ThrottleName, number>> = {
   register: 60 * 60_000,
@@ -43,10 +57,12 @@ interface RequestLike {
 /**
  * Client IP as resolved by Express. `trust proxy` (see `configureApp`) only trusts
  * `X-Forwarded-For` hops that are private addresses (ingress, Caddy), so a client on the
- * internet cannot spoof it.
+ * internet cannot spoof it. IPv6 addresses are reduced to their /64 (otherwise one host with a
+ * /64 would have 2^64 "IPs"); IPv4-mapped IPv6 becomes the plain IPv4.
  */
 export function clientIp(req: RequestLike): string {
-  return req.ip ?? req.socket?.remoteAddress ?? 'unknown';
+  const ip = req.ip ?? req.socket?.remoteAddress;
+  return ip ? normalizeIp(ip, IPV6_SUBNET_PREFIX) : 'unknown';
 }
 
 export const ipTracker: ThrottlerGetTrackerFunction = (req: RequestLike) => `ip:${clientIp(req)}`;
@@ -58,6 +74,10 @@ export const loginTracker: ThrottlerGetTrackerFunction = (req: RequestLike) => {
   const normalized = typeof email === 'string' ? email.trim().toLowerCase() : '';
   return `login:${clientIp(req)}:${normalized}`;
 };
+
+/** Per client IP only (second counter of the login route). */
+export const loginIpTracker: ThrottlerGetTrackerFunction = (req: RequestLike) =>
+  `loginip:${clientIp(req)}`;
 
 /** Authenticated routes: per user (the global JWT guard runs before this guard). */
 export const userTracker: ThrottlerGetTrackerFunction = (req: RequestLike) =>
@@ -96,7 +116,40 @@ export function buildThrottler(limits: ThrottleLimits): ThrottlerOptions {
   };
 }
 
+/**
+ * Second throttler (named `loginIp`): only on the login route, per client IP. Named throttlers
+ * get suffixed headers (`Retry-After-loginIp`); {@link AppThrottlerGuard} adds the standard
+ * `Retry-After` too.
+ */
+export function buildLoginIpThrottler(limit: number): ThrottlerOptions {
+  return {
+    name: 'loginIp',
+    limit,
+    ttl: THROTTLE_WINDOWS_MS.login,
+    skipIf: (context) => throttleNameOf(context) !== 'login',
+    getTracker: loginIpTracker,
+  };
+}
+
+/**
+ * `ThrottlerGuard` that always answers the blocked request with the standard `Retry-After`
+ * (seconds), whichever throttler blocked it: clients (and the frontend) only read that one.
+ */
+@Injectable()
+export class AppThrottlerGuard extends ThrottlerGuard {
+  protected override async throwThrottlingException(
+    context: ExecutionContext,
+    detail: ThrottlerLimitDetail,
+  ): Promise<void> {
+    const response = context.switchToHttp().getResponse<{
+      header?: (name: string, value: string) => unknown;
+    }>();
+    response.header?.('Retry-After', String(Math.max(1, Math.ceil(detail.timeToBlockExpire))));
+    await super.throwThrottlingException(context, detail);
+  }
+}
+
 /** Applies the throttler guard to one route with the limits of the named family. */
 export function ThrottleBy(name: ThrottleName) {
-  return applyDecorators(UseGuards(ThrottlerGuard), SetMetadata(THROTTLE_ROUTE, name));
+  return applyDecorators(UseGuards(AppThrottlerGuard), SetMetadata(THROTTLE_ROUTE, name));
 }

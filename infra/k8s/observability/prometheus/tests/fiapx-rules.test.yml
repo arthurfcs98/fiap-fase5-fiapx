@@ -135,15 +135,19 @@ tests:
             value: 1
 
   # ------------------------------------------------------------------ sucesso do pipeline
-  - name: P0098/P0099 contam como erro do sistema; P0001 (entrada inválida) não
+  - name: P0098/P0099/P0007 contam como erro do sistema; P0001 e P0006 (entrada) não
     interval: 1m
     input_series:
       - series: "fiapx_videos_completed_total"
         values: "0+98x60"
       - series: 'fiapx_videos_failed_total{error_code="P0099"}'
-        values: "0+2x60"
+        values: "0+1x60"
+      - series: 'fiapx_videos_failed_total{error_code="P0007"}'
+        values: "0+1x60"
       - series: 'fiapx_videos_failed_total{error_code="P0001"}'
         values: "0+50x60"
+      - series: 'fiapx_videos_failed_total{error_code="P0006"}'
+        values: "0+10x60"
     promql_expr_test:
       - expr: fiapx:slo_pipeline:error_ratio_7d
         eval_time: 30m
@@ -169,6 +173,51 @@ tests:
         exp_samples:
           - labels: "fiapx:slo_pipeline:sli_7d"
             value: 1
+
+  - name: a série de cada código nasce em 0 no boot, então a PRIMEIRA falha já conta
+    interval: 1m
+    input_series:
+      - series: "fiapx_videos_completed_total"
+        values: "0+9x30"
+      # 0 no boot (PrometheusVideoMetrics), 1 falha no minuto 10 e nada mais.
+      - series: 'fiapx_videos_failed_total{error_code="P0098"}'
+        values: "0x9 1x20"
+    promql_expr_test:
+      - expr: round(fiapx:slo_pipeline:error_ratio_7d, 0.001)
+        eval_time: 30m
+        exp_samples:
+          - labels: "{}"
+            value: 0.004
+
+  # ------------------------------------------------------------------ tempo até o resultado
+  - name: tempo até o resultado mede upload → COMPLETED (fila inclusa), com a meta de 5 min
+    interval: 1m
+    input_series:
+      # 10 vídeos/min: 8 em até 300 s, 2 entre 300 e 600 s (fila acumulada num pico).
+      - series: 'fiapx_video_turnaround_seconds_bucket{le="300"}'
+        values: "0+8x60"
+      - series: 'fiapx_video_turnaround_seconds_bucket{le="600"}'
+        values: "0+10x60"
+      - series: 'fiapx_video_turnaround_seconds_bucket{le="+Inf"}'
+        values: "0+10x60"
+      - series: "fiapx_video_turnaround_seconds_count"
+        values: "0+10x60"
+    promql_expr_test:
+      - expr: fiapx:slo_turnaround:sli_7d
+        eval_time: 30m
+        exp_samples:
+          - labels: "fiapx:slo_turnaround:sli_7d"
+            value: 0.8
+      - expr: round(fiapx:slo_turnaround:error_budget_remaining_7d, 0.0001)
+        eval_time: 30m
+        exp_samples:
+          - labels: "{}"
+            value: -3
+      - expr: round(fiapx:slo_turnaround:p95_rate30m)
+        eval_time: 45m
+        exp_samples:
+          - labels: "{}"
+            value: 525
 
   # ------------------------------------------------------------------ nenhuma requisição perdida
   - name: DLQ com mensagem dispara FiapxDlqNotEmpty (por fila); fila de trabalho não
@@ -218,6 +267,34 @@ tests:
         eval_time: 15m
         exp_samples:
           - labels: 'ALERTS{alertname="FiapxQueueBacklogHigh",alertstate="firing",severity="warning"}'
+            value: 1
+
+  - name: fila principal sem consumidor por 5 min dispara FiapxQueueWithoutConsumer (só as principais)
+    interval: 1m
+    input_series:
+      - series: 'rabbitmq_queue_consumers{vhost="/",queue="worker.video-uploaded"}'
+        values: "1 1 0 0 0 0 0 0 0 0"
+      - series: 'rabbitmq_queue_consumers{vhost="/",queue="notification.events"}'
+        values: "1x10"
+      - series: 'rabbitmq_queue_consumers{vhost="/",queue="worker.video-uploaded.dlq"}'
+        values: "0x10"
+    promql_expr_test:
+      - expr: ALERTS{alertname="FiapxQueueWithoutConsumer", alertstate="firing"}
+        eval_time: 9m
+        exp_samples:
+          - labels: 'ALERTS{alertname="FiapxQueueWithoutConsumer",alertstate="firing",queue="worker.video-uploaded",severity="critical",slo="nenhuma-requisicao-perdida"}'
+            value: 1
+
+  - name: zips guardados acima de 2 GiB por 10 min disparam FiapxZipStorageHigh
+    interval: 1m
+    input_series:
+      - series: 'fiapx_zip_storage_bytes{pod="video-api-a"}'
+        values: "1000000000 2500000000x15"
+    promql_expr_test:
+      - expr: ALERTS{alertname="FiapxZipStorageHigh", alertstate="firing"}
+        eval_time: 14m
+        exp_samples:
+          - labels: 'ALERTS{alertname="FiapxZipStorageHigh",alertstate="firing",severity="warning",slo="sucesso-pipeline"}'
             value: 1
 
   # ------------------------------------------------------------------ disponibilidade dos alvos

@@ -58,7 +58,7 @@ thresholds:
 - **Workers**: `docker compose logs -f video-worker` mostra as 3 réplicas dividindo o trabalho.
 - **Métricas**: `docker compose exec video-worker sh -c 'wget -qO- --header "Authorization: Bearer $METRICS_TOKEN" http://127.0.0.1:9464/metrics' | grep fiapx_worker_jobs_total`.
 - No Kubernetes, o KEDA escala o `video-worker` pela profundidade da fila e o dashboard
-  "FIAP X — Pipeline de vídeos" do Grafana mostra fila, réplicas e duração
+  "FIAP Frames — Pipeline de vídeos" do Grafana mostra fila, réplicas e duração
   (`docs/observabilidade.md`).
 
 ## Limites do stack local

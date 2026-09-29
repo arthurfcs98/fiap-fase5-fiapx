@@ -6,13 +6,16 @@
 #   gitleaks git --redact -v .          # histórico inteiro (igual ao CI)
 #   gitleaks protect --staged --redact   # o que o pre-commit roda
 # =============================================================================
-title = "FIAP X"
+title = "FIAP Frames"
 
 [extend]
 useDefault = true
 
+# `targetRules`: cada exceção vale SÓ para a regra genérica que dá falso positivo nestes valores;
+# as regras específicas (chave AWS, chave privada, token do GitHub...) continuam valendo sempre.
 [[allowlists]]
 description = "Senhas falsas de teste/demo ('senha-...') e a chave S3 de teste (0123456789abcdef...)"
+targetRules = ["generic-api-key"]
 regexes = [
   '''^senha-[A-Za-z0-9-]+$''',
   '''^(0123456789abcdef)+$''',
@@ -20,5 +23,6 @@ regexes = [
 
 [[allowlists]]
 description = "Idempotency-Key é um identificador de requisição escolhido pelo cliente, não um segredo"
+targetRules = ["generic-api-key"]
 regexTarget = "line"
 regexes = ['''(?i)idempotency-key''']

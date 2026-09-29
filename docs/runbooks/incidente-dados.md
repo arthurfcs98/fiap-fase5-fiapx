@@ -1,7 +1,7 @@
 # Runbook: incidente com dados pessoais (LGPD art. 48)
 
 > Quando usar: suspeita ou confirmação de acesso indevido, vazamento, perda ou alteração de dados
-> pessoais do FIAP X (usuários, vídeos, zips, e-mails, notificações). Mapa de dados e retenção:
+> pessoais do FIAP Frames (usuários, vídeos, zips, e-mails, notificações). Mapa de dados e retenção:
 > [`docs/lgpd.md`](../lgpd.md). Contrato: [`contratos.md`](../arquitetura/contratos.md), seção 12.
 >
 > Regra de ouro: **conter primeiro, registrar tudo, comunicar dentro do prazo**. Cada passo abaixo
@@ -13,7 +13,7 @@
 | Sinal | Onde aparece |
 |---|---|
 | Segredo no Git (JWT, S3, banco, Resend) | alerta do gitleaks no CI / pre-commit, aviso do GitHub secret scanning |
-| Muitos 401/403/429, downloads fora do padrão, pico de `V0005` | Grafana → dashboard `FIAP X — SLOs`; Loki: `{namespace="fiapx"} \| json \| error_code="V0005"` |
+| Muitos 401/403/429, downloads fora do padrão, pico de `V0005` | Grafana → dashboard `FIAP Frames — SLOs`; Loki: `{namespace="fiapx"} \| json \| error_code="V0005"` |
 | Acesso não esperado a buckets/banco | logs do Garage/Postgres, `pg_stat_activity` (`application_name`) |
 | Aviso de terceiro (usuário, pesquisador, fornecedor: Resend, Cloudflare, provedor da VM) | e-mail de contato da política |
 | E-mail enviado ao destinatário errado | `notifications` (notification-service), logs com `correlationId` |

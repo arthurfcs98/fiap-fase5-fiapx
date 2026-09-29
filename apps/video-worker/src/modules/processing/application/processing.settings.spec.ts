@@ -1,10 +1,11 @@
 import {
   FFPROBE_TIMEOUT_MS,
-  MIN_STALE_WORK_DIR_MS,
   processingSettingsFromConfig,
+  SHUTDOWN_TRANSFER_MARGIN_MS,
+  shutdownTimeoutMsFor,
 } from './processing.settings';
 
-const CONFIG = { FFMPEG_TIMEOUT_MS: 600_000, MAX_VIDEO_DURATION_S: 600 };
+const CONFIG = { FFMPEG_TIMEOUT_MS: 600_000, MAX_VIDEO_DURATION_S: 600, MAX_FRAMES_MB: 1536 };
 
 describe('processingSettingsFromConfig', () => {
   it('derives the pipeline settings from the config and the hostname', () => {
@@ -13,25 +14,19 @@ describe('processingSettingsFromConfig', () => {
       ffmpegTimeoutMs: 600_000,
       ffprobeTimeoutMs: FFPROBE_TIMEOUT_MS,
       maxVideoDurationS: 600,
-      staleWorkDirMs: MIN_STALE_WORK_DIR_MS,
+      maxFramesBytes: 1536 * 1024 * 1024,
+      staleWorkDirMs: 0,
+      shutdownTimeoutMs: 690_000,
     });
   });
 
-  it('keeps leftovers of long ffmpeg budgets for twice the budget', () => {
+  it('never gives ffprobe more time than ffmpeg', () => {
     const settings = processingSettingsFromConfig(
-      { FFMPEG_TIMEOUT_MS: 3_600_000, MAX_VIDEO_DURATION_S: 600 },
-      'w',
-    );
-    expect(settings.staleWorkDirMs).toBe(7_200_000);
-  });
-
-  it('never gives ffprobe more time than ffmpeg and keeps at least 1 h for the sweep', () => {
-    const settings = processingSettingsFromConfig(
-      { FFMPEG_TIMEOUT_MS: 5_000, MAX_VIDEO_DURATION_S: 10 },
+      { FFMPEG_TIMEOUT_MS: 5_000, MAX_VIDEO_DURATION_S: 10, MAX_FRAMES_MB: 1 },
       'w',
     );
     expect(settings.ffprobeTimeoutMs).toBe(5_000);
-    expect(settings.staleWorkDirMs).toBe(MIN_STALE_WORK_DIR_MS);
+    expect(settings.shutdownTimeoutMs).toBe(5_000 + 5_000 + SHUTDOWN_TRANSFER_MARGIN_MS);
   });
 
   it('caps the worker id at 100 characters and falls back when the hostname is empty', () => {
@@ -41,5 +36,15 @@ describe('processingSettingsFromConfig', () => {
 
   it('uses the machine hostname by default', () => {
     expect(processingSettingsFromConfig(CONFIG).workerId.length).toBeGreaterThan(0);
+  });
+});
+
+describe('shutdownTimeoutMsFor', () => {
+  it('covers ffprobe + ffmpeg at their budgets + the transfers (the whole job in progress)', () => {
+    expect(shutdownTimeoutMsFor({ FFMPEG_TIMEOUT_MS: 600_000 })).toBe(
+      FFPROBE_TIMEOUT_MS + 600_000 + SHUTDOWN_TRANSFER_MARGIN_MS,
+    );
+    // Grace periods of compose (stop_grace_period) and K8s must stay above it.
+    expect(shutdownTimeoutMsFor({ FFMPEG_TIMEOUT_MS: 600_000 })).toBeLessThan(720_000);
   });
 });

@@ -1,7 +1,7 @@
 {
   "name": "fiap-fase5-fiapx",
   "version": "0.1.0",
-  "description": "FIAP X: processamento de vídeos em microsserviços (Hackathon SOAT Fase 5)",
+  "description": "FIAP Frames: processamento de vídeos em microsserviços (Hackathon SOAT Fase 5)",
   "author": "Arthur Cesarino",
   "private": true,
   "license": "UNLICENSED",

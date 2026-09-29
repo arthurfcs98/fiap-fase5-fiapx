@@ -13,11 +13,14 @@ import { AuthErrors, CommonErrors, VideoErrors } from '../errors/catalog';
 import type { ErrorResponseBody } from './global-exception.filter';
 import { GlobalExceptionFilter } from './global-exception.filter';
 
-function setup(request: Record<string, unknown> = { id: 'req-123', headers: {} }) {
+function setup(
+  request: Record<string, unknown> = { id: 'req-123', headers: {} },
+  url = '/api/videos/1',
+) {
   const httpAdapter = {
     reply: jest.fn(),
     setHeader: jest.fn(),
-    getRequestUrl: jest.fn(() => '/api/videos/1'),
+    getRequestUrl: jest.fn(() => url),
   };
   const response = { fake: 'response' };
   const host = {
@@ -222,6 +225,27 @@ describe('GlobalExceptionFilter', () => {
       expect.stringContaining('conexão recusada'),
       expect.stringContaining('Error: conexão recusada'),
     );
+  });
+
+  it('dependência inalcançável (Postgres fora) vira 503 X0003 com Retry-After, sem detalhes', () => {
+    const { run, httpAdapter, errorLog, warnLog } = setup();
+    const refused = Object.assign(new Error('getaddrinfo ENOTFOUND postgres'), {
+      code: 'ENOTFOUND',
+    });
+
+    const { body, status } = run(refused);
+
+    expect(status).toBe(503);
+    expect(body.error).toMatchObject({ code: 'X0003', metadata: { retryAfterSeconds: 5 } });
+    expect(JSON.stringify(body)).not.toContain('postgres');
+    expect(httpAdapter.setHeader).toHaveBeenCalledWith(expect.anything(), 'Retry-After', '5');
+    expect(warnLog).toHaveBeenCalledWith(expect.stringContaining('ENOTFOUND'));
+    expect(errorLog).not.toHaveBeenCalled();
+  });
+
+  it('path do corpo de erro sai sem a query string (a do download tem a assinatura)', () => {
+    const { run } = setup({ headers: {} }, '/api/downloads/v1?exp=1&sig=abc');
+    expect(run(VideoErrors.INVALID_DOWNLOAD_SIGNATURE()).body.path).toBe('/api/downloads/v1');
   });
 
   it('trata valores lançados que não são Error', () => {

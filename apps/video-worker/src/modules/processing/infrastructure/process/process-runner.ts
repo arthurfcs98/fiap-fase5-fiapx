@@ -6,6 +6,8 @@ import { Injectable, Logger } from '@nestjs/common';
 export interface ProcessRunOptions {
   /** The process is SIGKILLed (AbortController) when it runs longer than this. */
   timeoutMs: number;
+  /** The caller gave up (e.g. the AMQP delivery was abandoned): SIGKILL right away. */
+  signal?: AbortSignal;
   /** Keep stdout (ffprobe JSON). Default: discarded. */
   captureStdout?: boolean;
   /** stdout cap when captured. Default: 1 MiB (anything beyond is dropped). */
@@ -18,6 +20,8 @@ export interface ProcessRunResult {
   signal: NodeJS.Signals | null;
   /** Our time budget expired and the process was killed. */
   timedOut: boolean;
+  /** Killed because the caller's `signal` aborted (not a failure of the input). */
+  aborted: boolean;
   stdout: string;
   /** Last bytes of stderr (diagnostics). */
   stderrTail: string;
@@ -67,6 +71,8 @@ export class ProcessRunner implements OnApplicationShutdown {
     const controller = new AbortController();
     const stdout = new BoundedBuffer(options.maxStdoutBytes ?? DEFAULT_MAX_STDOUT_BYTES);
     const stderr = new TailBuffer(STDERR_TAIL_BYTES);
+    let timedOut = false;
+    let aborted = false;
 
     return new Promise<ProcessRunResult>((resolve, reject) => {
       const child = spawn(command, args, {
@@ -75,12 +81,20 @@ export class ProcessRunner implements OnApplicationShutdown {
         killSignal: 'SIGKILL',
       });
       this.running.add(child);
-      const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, options.timeoutMs);
+      const onCallerAbort = () => {
+        aborted = true;
+        controller.abort();
+      };
       let settled = false;
       const settle = (finish: () => void): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        options.signal?.removeEventListener('abort', onCallerAbort);
         this.running.delete(child);
         finish();
       };
@@ -93,18 +107,23 @@ export class ProcessRunner implements OnApplicationShutdown {
         settle(() => reject(new ProcessSpawnError(command, { cause: error })));
       });
       child.on('close', (exitCode, signal) => {
+        // A process that exited on its own right as the timer/abort fired was not killed by it.
+        const killedByUs = controller.signal.aborted && signal !== null;
         settle(() =>
           resolve({
             exitCode,
             signal,
-            // A process that exited on its own right as the timer fired was not killed by it.
-            timedOut: controller.signal.aborted && signal !== null,
+            timedOut: killedByUs && timedOut && !aborted,
+            aborted: killedByUs && aborted,
             stdout: stdout.toString(),
             stderrTail: stderr.toString(),
             durationMs: Date.now() - startedAt,
           }),
         );
       });
+      // Only after the 'error' listener exists: aborting emits it synchronously.
+      if (options.signal?.aborted) onCallerAbort();
+      else options.signal?.addEventListener('abort', onCallerAbort, { once: true });
     });
   }
 

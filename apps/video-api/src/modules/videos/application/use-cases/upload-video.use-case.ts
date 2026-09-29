@@ -8,6 +8,7 @@ import {
   ObjectStorageError,
   rawVideoKey,
   STORAGE_BUCKETS,
+  StorageQuotaExceededError,
   zipKey,
 } from '@fiapx/storage';
 import { Inject, Injectable, Logger } from '@nestjs/common';
@@ -36,9 +37,15 @@ import type { IdempotencyCache } from '../ports/idempotency.cache';
 import { IDEMPOTENCY_CACHE } from '../ports/idempotency.cache';
 import type { VideoMetrics } from '../ports/video.metrics';
 import { VIDEO_METRICS } from '../ports/video.metrics';
+import type { VideoSettings } from '../video.settings';
+import { VIDEO_SETTINGS } from '../video.settings';
 
 /** Seconds suggested in `Retry-After` when the storage is down. */
 export const STORAGE_RETRY_AFTER_SECONDS = 5;
+/** `Retry-After` when `fiapx-raw` hit its quota: space comes back as the queue drains. */
+export const RAW_BUCKET_FULL_RETRY_AFTER_SECONDS = 30;
+/** `Retry-After` of `429 V0007`: a short video is processed in about 10 s. */
+export const PENDING_VIDEOS_RETRY_AFTER_SECONDS = 15;
 
 export interface IncomingVideoFile {
   /** File name sent by the client (sanitized here, never used as a storage key). */
@@ -81,7 +88,21 @@ export class UploadVideoUseCase {
     @Inject(IDEMPOTENCY_CACHE) private readonly idempotency: IdempotencyCache,
     @Inject(VIDEO_METRICS) private readonly metrics: VideoMetrics,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Inject(VIDEO_SETTINGS) private readonly settings: VideoSettings,
   ) {}
+
+  /**
+   * Per-user limit of videos in progress (checked BEFORE reading the body): the ones in the
+   * database (QUEUED/PROCESSING) plus `inFlight` uploads of this user still streaming.
+   * @throws `429 V0007` with `Retry-After`
+   */
+  async assertWithinPendingLimit(userId: string, inFlight: number): Promise<void> {
+    const limit = this.settings.maxPendingVideosPerUser;
+    const pending = await this.videos.countPendingByOwner(userId);
+    if (pending + inFlight < limit) return;
+    this.logger.warn({ msg: 'Limite de vídeos em andamento atingido', userId, pending, inFlight });
+    throw VideoErrors.TOO_MANY_PENDING_VIDEOS(limit, PENDING_VIDEOS_RETRY_AFTER_SECONDS);
+  }
 
   /**
    * Upload already accepted with this `Idempotency-Key` (checked BEFORE reading the body):
@@ -178,6 +199,10 @@ export class UploadVideoUseCase {
     } catch (error) {
       // Aborted by the HTTP layer (size limit, client gone): it decides the response.
       if (signal?.aborted) throw error;
+      if (error instanceof StorageQuotaExceededError) {
+        this.logger.warn({ msg: 'Bucket de vídeos originais cheio (quota)', videoId });
+        throw CommonErrors.UNAVAILABLE(RAW_BUCKET_FULL_RETRY_AFTER_SECONDS);
+      }
       if (error instanceof ObjectStorageError) {
         this.logger.warn({ msg: 'Storage indisponível no upload', videoId, error: error.message });
         throw CommonErrors.UNAVAILABLE(STORAGE_RETRY_AFTER_SECONDS);

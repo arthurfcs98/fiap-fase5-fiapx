@@ -4,7 +4,9 @@ import { HttpAdapterHost } from '@nestjs/core';
 import type { AppErrorPayload } from '../errors/app-error';
 import { AppErrorException } from '../errors/app-error.exception';
 import { AuthErrors } from '../errors/catalog/auth.errors';
+import { CommonErrors } from '../errors/catalog/common.errors';
 import { VideoErrors } from '../errors/catalog/video.errors';
+import { isConnectivityError } from '../errors/connectivity';
 
 export interface ErrorResponseBody {
   statusCode: number;
@@ -33,6 +35,9 @@ const CATALOG_BY_STATUS: Readonly<Partial<Record<number, () => AppErrorException
   [HttpStatus.PAYLOAD_TOO_LARGE]: () => VideoErrors.FILE_TOO_LARGE(),
 };
 
+/** `Retry-After` of a `503 X0003` caused by a dependency that could not be reached. */
+export const DEPENDENCY_RETRY_AFTER_SECONDS = 5;
+
 /**
  * Filtro global (portado da Fase 2): toda resposta de erro sai no mesmo envelope
  * `{ statusCode, error: { message, code, description, metadata }, timestamp, path, correlationId }`.
@@ -41,8 +46,12 @@ const CATALOG_BY_STATUS: Readonly<Partial<Record<number, () => AppErrorException
  * - `HttpException` com `message` em array (class-validator) → `X0001 VALIDATION`.
  * - `HttpException` 401 → `A0003 UNAUTHORIZED`; 413 → `V0003 FILE_TOO_LARGE`.
  * - Outra `HttpException` → `X0<status>` com o nome do status (ex.: `X0404 NOT_FOUND`); campos
- *   extras do corpo (ex.: detalhes do Terminus no /health/ready) vão para `metadata`.
+ *   extras do corpo vão para `metadata`.
+ * - Dependência inalcançável (Postgres fora, conexão recusada/encerrada: `isConnectivityError`)
+ *   → `503 X0003` com `Retry-After`, e não 500: o cliente pode tentar de novo.
  * - Qualquer outra coisa → `X0002 INTERNAL`, sem vazar detalhes, com log do stack.
+ *
+ * `path` sai SEM a query string: a do download carrega a assinatura HMAC do link.
  *
  * Log: 5xx em `error` com stack, exceto 503 (dependência fora, ex.: readiness do Terminus
  * durante uma queda do banco), que vai em `warn` sem stack para não inundar os logs a cada
@@ -73,7 +82,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       statusCode: status,
       error: payload,
       timestamp: new Date().toISOString(),
-      path: String(httpAdapter.getRequestUrl(request)),
+      path: withoutQuery(String(httpAdapter.getRequestUrl(request))),
     };
     const correlationId = extractCorrelationId(request);
     if (correlationId) body.correlationId = correlationId;
@@ -135,6 +144,13 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       };
     }
 
+    if (isConnectivityError(exception)) {
+      return {
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        payload: CommonErrors.UNAVAILABLE(DEPENDENCY_RETRY_AFTER_SECONDS).appError.toPayload(),
+      };
+    }
+
     return {
       status: HttpStatus.INTERNAL_SERVER_ERROR,
       payload: {
@@ -145,6 +161,11 @@ export class GlobalExceptionFilter implements ExceptionFilter {
       },
     };
   }
+}
+
+function withoutQuery(url: string): string {
+  const index = url.indexOf('?');
+  return index === -1 ? url : url.slice(0, index);
 }
 
 function statusName(status: number): string {

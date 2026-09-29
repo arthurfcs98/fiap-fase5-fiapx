@@ -1,6 +1,10 @@
 import { Readable } from 'node:stream';
 import { text } from 'node:stream/consumers';
-import { ObjectNotFoundError, ObjectStorageError } from '../object-storage.port';
+import {
+  ObjectNotFoundError,
+  ObjectStorageError,
+  StorageQuotaExceededError,
+} from '../object-storage.port';
 import { InMemoryObjectStorage } from './in-memory-object-storage';
 
 describe('InMemoryObjectStorage', () => {
@@ -122,4 +126,14 @@ describe('InMemoryObjectStorage', () => {
       await act(storage); // a falha simulada vale para UMA chamada
     },
   );
+
+  it('failNext com um ObjectStorageError pronto (ex.: quota) lança ele mesmo', async () => {
+    const storage = new InMemoryObjectStorage();
+    const quota = new StorageQuotaExceededError('put', 'fiapx-zips', 'u/v.zip');
+    storage.failNext('put', quota);
+
+    await expect(
+      storage.putStream({ bucket: 'fiapx-zips', key: 'u/v.zip', body: Buffer.from('x') }),
+    ).rejects.toBe(quota);
+  });
 });

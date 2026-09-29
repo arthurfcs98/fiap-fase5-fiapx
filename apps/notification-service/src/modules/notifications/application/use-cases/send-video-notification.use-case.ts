@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { RetryableError } from '@fiapx/common';
+import { DependencyUnavailableError, RetryableError } from '@fiapx/common';
 import type { PayloadOf } from '@fiapx/contracts';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { EmailRejectedError } from '../../domain/email-rejected.error';
@@ -38,26 +38,41 @@ export type VideoNotificationCommand =
 
 /** How the event ended (a transient failure throws `RetryableError` instead). */
 export type VideoNotificationResult =
-  'SENT' | 'DISABLED' | 'DUPLICATE' | 'RECIPIENT_REMOVED' | 'REJECTED';
+  'SENT' | 'DISABLED' | 'DUPLICATE' | 'RECIPIENT_REMOVED' | 'REJECTED' | 'BUDGET_EXCEEDED';
 
 type Delivery =
   | { kind: 'sent'; notificationId: string; providerMessageId: string }
   | { kind: 'duplicate'; notificationId: string }
   | { kind: 'recipient-removed'; notificationId: string }
   | { kind: 'rejected'; notificationId: string; reason: string }
-  | { kind: 'transient'; notificationId: string; reason: string; final: boolean };
+  | {
+      kind: 'transient';
+      notificationId: string;
+      reason: string;
+      final: boolean;
+      /** The provider itself is down/throttling: the consumer pauses (regra 2b). */
+      outage?: string;
+    };
 
 /** Stored in `last_error` when the user was deleted before the e-mail went out. */
 export const RECIPIENT_REMOVED_ERROR = 'Recipient removed (LGPD anonymization): e-mail not sent';
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 /**
  * `video.failed` (always) and `video.completed` (only with `NOTIFY_ON_SUCCESS=true`) → e-mail.
  *
- * 1. Idempotent registration by `dedup_key` (`INSERT ... ON CONFLICT DO NOTHING`).
+ * 0. E-mail budget (anti-abuse, sign-up addresses are not verified): a NEW notification beyond
+ *    `NOTIFICATION_DAILY_LIMIT_PER_USER` for the user or `NOTIFICATION_DAILY_LIMIT` for everyone
+ *    in 24 h is skipped (nothing stored, metric SKIPPED).
+ * 1. Idempotent registration by `dedup_key` (`INSERT ... ON CONFLICT DO NOTHING`); never for a
+ *    user already deleted (`deleted_users`, LGPD).
  * 2. Under the row lock: SENT → nothing to do (duplicate event); anonymized → FAILED, no e-mail;
  *    otherwise send with the notification id as idempotency key.
  * 3. SENT/FAILED/PENDING persisted before the lock is released; then the message is acked,
- *    or, on a transient failure, `RetryableError` sends it to the next `.retry.N` queue.
+ *    or, on a transient failure, `RetryableError` sends it to the next `.retry.N` queue. A
+ *    provider outage (connection refused, 5xx, 429, timeout) is a `DependencyUnavailableError`:
+ *    the consumer pauses and the notification stays PENDING (never FAILED for an outage).
  *
  * Fixes the Fase 4 bug (provider error logged and swallowed, e-mail lost): no failure is ever
  * acknowledged silently. Logs carry ids only, never the address or the user's name.
@@ -83,9 +98,27 @@ export class SendVideoNotificationUseCase {
       return 'DISABLED';
     }
 
-    const { email, templateData } = this.render(command);
     const dedupKey = notificationDedupKey(type, payload.videoId);
-    await this.repository.registerIfAbsent({
+    if (!(await this.repository.isRegistered(dedupKey))) {
+      const counts = await this.repository.countCreatedSince(
+        new Date(Date.now() - DAY_MS),
+        payload.userId,
+      );
+      const scope =
+        counts.user >= this.settings.dailyLimitPerUser
+          ? 'user'
+          : counts.total >= this.settings.dailyLimit
+            ? 'global'
+            : undefined;
+      if (scope) {
+        this.metrics.record(type, 'SKIPPED');
+        this.logger.warn({ msg: 'E-mail budget reached: notification not sent', ...ids, scope });
+        return 'BUDGET_EXCEEDED';
+      }
+    }
+
+    const { email, templateData } = this.render(command);
+    const registered = await this.repository.registerIfAbsent({
       id: randomUUID(),
       dedupKey,
       userId: payload.userId,
@@ -94,6 +127,11 @@ export class SendVideoNotificationUseCase {
       subject: email.subject,
       payload: templateData,
     });
+    if (registered === 'user-deleted') {
+      this.metrics.record(type, 'SKIPPED');
+      this.logger.warn({ msg: 'User already deleted (LGPD): notification not stored', ...ids });
+      return 'RECIPIENT_REMOVED';
+    }
 
     const delivery = await this.repository.deliverExclusively(dedupKey, (notification) =>
       this.attempt(notification, email, command),
@@ -157,12 +195,14 @@ export class SendVideoNotificationUseCase {
       }
       const reason =
         error instanceof RetryableError ? safeErrorText(error.reason) : describeFailure(error);
-      const final = command.finalAttempt;
+      const outage = error instanceof DependencyUnavailableError ? error.dependency : undefined;
+      // An outage does not spend the message's retries (the consumer pauses): never "last".
+      const final = command.finalAttempt && outage === undefined;
       return {
         record: final
           ? { status: 'FAILED', error: `Retries exhausted: ${reason}`, attempted: true }
           : { status: 'PENDING', error: reason, attempted: true },
-        result: { kind: 'transient', notificationId, reason, final },
+        result: { kind: 'transient', notificationId, reason, final, outage },
       };
     }
   }
@@ -210,6 +250,7 @@ export class SendVideoNotificationUseCase {
           provider: this.sender.provider,
           reason: delivery.reason,
         });
+        if (delivery.outage !== undefined) throw new DependencyUnavailableError(delivery.outage);
         throw new RetryableError(delivery.reason);
     }
   }

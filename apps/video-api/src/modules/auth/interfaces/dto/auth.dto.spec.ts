@@ -25,6 +25,8 @@ describe('auth DTO schemas', () => {
     ['invalid e-mail', { email: 'ana' }, 'email'],
     ['empty name', { name: '   ' }, 'name'],
     ['long name', { name: 'a'.repeat(121) }, 'name'],
+    ['link in the name (phishing via our e-mails)', { name: 'Pix bloqueado http://x.io' }, 'name'],
+    ['www address in the name', { name: 'Acesse WWW.golpe.com' }, 'name'],
   ])('register rejects %s', (_case, patch, field) => {
     const result = registerSchema.safeParse({ ...valid, ...patch });
     expect(result.success).toBe(false);

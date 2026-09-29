@@ -132,11 +132,13 @@ curl -s $API/api/health/ready
 ```
 
 ```json
-{"status":"ok","info":{"database":{"status":"up"},"storage":{"status":"up"}},"error":{},"details":{"database":{"status":"up"},"storage":{"status":"up"}}}
+{"status":"ok","service":"video-api","version":"dev"}
 ```
 
 `live` só diz que o processo responde; `ready` confere Postgres e os dois buckets do Garage (não
-o RabbitMQ: com o broker fora, o upload continua funcionando pelo outbox).
+o RabbitMQ: com o broker fora, o upload continua funcionando pelo outbox). Se algo estiver fora,
+`ready` responde `503 {"status":"unavailable",...}` sem o motivo (a rota é pública; o motivo vai
+para o log do video-api).
 
 ### 4.2 Cadastro (`POST /api/auth/register`)
 
@@ -639,7 +641,8 @@ sua máquina.
 1. Abra <http://127.0.0.1:8025>.
 2. Cada vídeo `FAILED` gera o e-mail **"FIAP Frames: não foi possível processar o seu vídeo"**
    (com o código `P00xx` e o link para o site). No compose, `NOTIFY_ON_SUCCESS=true`, então cada
-   `COMPLETED` gera também **"FIAP Frames: o seu vídeo foi processado"**.
+   `COMPLETED` gera também **"FIAP Frames: o seu vídeo foi processado"** (em produção é `false`:
+   e-mail só na falha, como pede o enunciado, e com orçamento diário por usuário e total).
 3. Aba **Headers** do e-mail: `X-Correlation-Id` é o mesmo id do upload.
 
 Pela API do Mailpit:

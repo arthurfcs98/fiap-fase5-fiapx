@@ -1,5 +1,5 @@
 # =============================================================================
-# infra/k8s/base — estado desejado do FIAP X SEM a observabilidade (ela é outro "pacote",
+# infra/k8s/base — estado desejado do FIAP Frames SEM a observabilidade (ela é outro "pacote",
 # infra/k8s/observability, que os overlays incluem).
 #
 # Regras do deploy.sh (infra/vm/README.md, seção 6.6) que valem para tudo aqui:

@@ -23,6 +23,7 @@ export function messageContext(
     redelivered: false,
     deathReason: undefined,
     headers: {},
+    signal: new AbortController().signal,
     ...overrides,
   };
 }

@@ -194,10 +194,16 @@ describe('notification-service end to end (Postgres, RabbitMQ and Mailpit)', () 
       "SELECT indexname FROM pg_indexes WHERE tablename = 'notifications' ORDER BY indexname",
     );
     expect(indexes.map((index) => index.indexname)).toEqual([
+      'ix_notifications_created',
       'ix_notifications_user',
       'notifications_dedup_key_key',
       'notifications_pkey',
     ]);
+    const deletedUsers = await dataSource.query<{ column_name: string }[]>(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'deleted_users' ORDER BY ordinal_position`,
+    );
+    expect(deletedUsers.map((column) => column.column_name)).toEqual(['user_id', 'deleted_at']);
 
     const info = jest.fn();
     await expect(
@@ -226,8 +232,9 @@ describe('notification-service end to end (Postgres, RabbitMQ and Mailpit)', () 
     const message = await mailpit.message(summary.ID);
     expect(message.Subject).toBe('FIAP Frames: não foi possível processar o seu vídeo');
     expect(message.From.Address).toBe('nao-responda@fiapx.local');
-    expect(message.HTML).toContain('Ana &lt;b&gt;&amp; &quot;Bia&quot;&lt;/b&gt;');
-    expect(message.HTML).toContain('&lt;script&gt;alert(1)&lt;/script&gt;.mp4');
+    // User text reaches the e-mail only as plain, link-safe text (anti-phishing).
+    expect(message.HTML).toContain('Olá, <strong>Ana b Bia b</strong>.');
+    expect(message.HTML).toContain('<strong>script alert 1 script (.mp4)</strong>');
     expect(message.HTML).not.toContain('<script>');
     expect(message.HTML).toContain(`href="${PUBLIC_BASE_URL}/"`);
     expect(message.Text).toContain('Motivo: O arquivo não é um vídeo válido ou está corrompido.');
@@ -404,6 +411,24 @@ describe('notification-service end to end (Postgres, RabbitMQ and Mailpit)', () 
     const [untouched] = await rowsOf('user_id = $1', [other.userId]);
     expect(untouched).toMatchObject({ recipient: other.userEmail });
     expect(untouched?.payload).toHaveProperty('userName');
+  });
+
+  it('user.deleted consumed BEFORE a late video.failed: nothing stored again, no e-mail (LGPD race)', async () => {
+    const late = failedPayload();
+    await publish(createEvent('user.deleted', { userId: late.userId }, 'cid-apagado'));
+    await waitFor(async () => {
+      const rows = await dataSource.query<{ user_id: string }[]>(
+        'SELECT user_id FROM deleted_users WHERE user_id = $1',
+        [late.userId],
+      );
+      return rows.length === 1;
+    });
+
+    await publish(createEvent('video.failed', late, 'cid-atrasado'));
+    await delay(2_000);
+
+    expect(await rowsOf('user_id = $1', [late.userId])).toEqual([]);
+    expect(await mailpit.messagesTo(late.userEmail)).toEqual([]);
   });
 
   it('the daily retention job anonymizes old notifications, one replica at a time', async () => {

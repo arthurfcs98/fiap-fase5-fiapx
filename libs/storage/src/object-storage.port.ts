@@ -68,7 +68,7 @@ export class ObjectNotFoundError extends Error {
 
 export type ObjectStorageOperation = 'put' | 'get' | 'head' | 'delete' | 'checkBucket';
 
-/** Falha do storage que não é "objeto inexistente" (rede, timeout, 5xx, permissão). */
+/** Falha do storage que não é "objeto inexistente" (rede, timeout, 5xx, permissão, quota). */
 export class ObjectStorageError extends Error {
   constructor(
     public readonly operation: ObjectStorageOperation,
@@ -80,5 +80,22 @@ export class ObjectStorageError extends Error {
     const reason = options?.cause instanceof Error ? `: ${options.cause.message}` : '';
     super(`Falha no storage (${operation} ${target})${reason}`, options);
     this.name = 'ObjectStorageError';
+  }
+}
+
+/**
+ * O bucket atingiu a quota de tamanho (Garage: `403 "Bucket size quota is reached"`). Não é
+ * queda do storage: repetir em segundos não resolve (só a retenção libera espaço). O worker a
+ * trata como falha permanente (`P0007 STORAGE_FULL`); o upload do api responde 503.
+ */
+export class StorageQuotaExceededError extends ObjectStorageError {
+  constructor(
+    operation: ObjectStorageOperation,
+    bucket: string,
+    key: string | undefined,
+    options?: { cause?: unknown },
+  ) {
+    super(operation, bucket, key, options);
+    this.name = 'StorageQuotaExceededError';
   }
 }

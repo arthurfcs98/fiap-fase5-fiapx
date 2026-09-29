@@ -3,13 +3,18 @@ import { NonRetryableError, RetryableError } from '@fiapx/common';
 import { videoUploadedFixture } from '@fiapx/contracts/fixtures';
 import { PublishError } from '@fiapx/messaging';
 import { RecordingEventPublisher } from '@fiapx/messaging/testing';
+import { StorageQuotaExceededError } from '@fiapx/storage';
 import { InMemoryObjectStorage } from '@fiapx/storage/testing';
 import { Logger } from '@nestjs/common';
 import type { FrameFile } from '../../domain/frames';
 import { MediaToolError } from '../../domain/media-tool.error';
 import type { IFrameArchiver } from '../../domain/ports/frame-archiver.port';
 import type { IProcessingMetrics, JobResult } from '../../domain/ports/processing-metrics.port';
-import type { IVideoToolkit, MediaToolRunOptions } from '../../domain/ports/video-toolkit.port';
+import type {
+  ExtractFramesOptions,
+  IVideoToolkit,
+  MediaToolRunOptions,
+} from '../../domain/ports/video-toolkit.port';
 import type { IWorkDirectory, JobWorkspace } from '../../domain/ports/work-directory.port';
 import type { VideoProbe } from '../../domain/video-probe';
 import { workerEventId } from '../event-ids';
@@ -24,7 +29,9 @@ const SETTINGS: ProcessingSettings = {
   ffmpegTimeoutMs: 600_000,
   ffprobeTimeoutMs: 30_000,
   maxVideoDurationS: 600,
-  staleWorkDirMs: 3_600_000,
+  maxFramesBytes: 1536 * 1024 * 1024,
+  staleWorkDirMs: 0,
+  shutdownTimeoutMs: 690_000,
 };
 
 /** In-memory scratch disk: records what the use case does with it. */
@@ -98,6 +105,8 @@ class FakeToolkit implements IVideoToolkit {
   probeError?: Error;
   extractError?: Error;
   frameCount = 3;
+  /** Runs inside extractFrames (e.g. to abort the delivery mid-job). */
+  onExtract?: () => void;
   readonly calls: { tool: 'probe' | 'extract'; path: string; options: MediaToolRunOptions }[] = [];
 
   constructor(private readonly workDirectory: FakeWorkDirectory) {}
@@ -107,8 +116,9 @@ class FakeToolkit implements IVideoToolkit {
     return this.probeError ? Promise.reject(this.probeError) : Promise.resolve(this.probeResult);
   }
 
-  extractFrames(sourcePath: string, framesDir: string, options: MediaToolRunOptions) {
+  extractFrames(sourcePath: string, framesDir: string, options: ExtractFramesOptions) {
     this.calls.push({ tool: 'extract', path: sourcePath, options });
+    this.onExtract?.();
     if (this.extractError) return Promise.reject(this.extractError);
     this.workDirectory.addFrames(framesDir, this.frameCount);
     return Promise.resolve();
@@ -245,8 +255,23 @@ describe('ProcessVideoUseCase', () => {
       expect(workspace?.sourcePath).toBe(`/work/${VIDEO.videoId}/source.mp4`);
       expect(workDirectory.sources.get(workspace?.sourcePath ?? '')).toEqual(RAW_BYTES);
       expect(toolkit.calls).toEqual([
-        { tool: 'probe', path: workspace?.sourcePath, options: { timeoutMs: 30_000 } },
-        { tool: 'extract', path: workspace?.sourcePath, options: { timeoutMs: 600_000 } },
+        {
+          tool: 'probe',
+          path: workspace?.sourcePath,
+          options: { timeoutMs: 30_000, signal: undefined },
+        },
+        {
+          tool: 'extract',
+          path: workspace?.sourcePath,
+          // At most one frame per second of MAX_VIDEO_DURATION_S (+1 to detect longer videos).
+          options: {
+            timeoutMs: 600_000,
+            signal: undefined,
+            frameLimit: 601,
+            maxDimension: 1920,
+            maxTotalBytes: 1536 * 1024 * 1024,
+          },
+        },
       ]);
       expect(workDirectory.removed).toEqual([`/work/${VIDEO.videoId}`]);
       expect(metrics.started).toBe(1);
@@ -479,6 +504,41 @@ describe('ProcessVideoUseCase', () => {
       expect(context.storage.contentOf(VIDEO.zipBucket, VIDEO.zipKey)).toBeUndefined();
     });
 
+    it('disk full while extracting → P0006, no retries (the frames of this video do not fit)', async () => {
+      const context = await withRawVideo(setup());
+      context.toolkit.extractError = new MediaToolError('ffmpeg', 'no_space', 'exit code 228');
+
+      const error = await rejection(context.useCase.execute(command()));
+
+      expect(appCode(error)).toBe('P0006');
+      expect(context.workDirectory.removed).toHaveLength(1);
+    });
+
+    it('more frames than MAX_VIDEO_DURATION_S allows (no duration in the header) → P0003', async () => {
+      const context = await withRawVideo(setup());
+      context.toolkit.probeResult = { ...context.toolkit.probeResult, durationSeconds: undefined };
+      context.toolkit.frameCount = 601;
+
+      const error = await rejection(context.useCase.execute(command()));
+
+      expect(appCode(error)).toBe('P0003');
+      expect((error as NonRetryableError).appError.metadata).toEqual({
+        durationS: 601,
+        maxDurationS: 600,
+      });
+      expect(context.storage.contentOf(VIDEO.zipBucket, VIDEO.zipKey)).toBeUndefined();
+    });
+
+    it('exactly MAX_VIDEO_DURATION_S frames is accepted', async () => {
+      const context = await withRawVideo(setup());
+      context.toolkit.frameCount = 600;
+
+      await expect(context.useCase.execute(command())).resolves.toMatchObject({
+        status: 'completed',
+        frameCount: 600,
+      });
+    });
+
     it('unexpected error from the toolkit → transient', async () => {
       const context = await withRawVideo(setup());
       context.toolkit.extractError = new TypeError('bug');
@@ -500,6 +560,20 @@ describe('ProcessVideoUseCase', () => {
       expect(context.archiver.streams[0]?.destroyed).toBe(true);
       expect(context.publisher.ofType('video.processing.completed')).toEqual([]);
       expect(context.workDirectory.removed).toHaveLength(1);
+    });
+
+    it('zip bucket full (quota) → P0007 right away, no retries', async () => {
+      const context = await withRawVideo(setup());
+      context.storage.failNext(
+        'put',
+        new StorageQuotaExceededError('put', VIDEO.zipBucket, VIDEO.zipKey),
+      );
+
+      const error = await rejection(context.useCase.execute(command()));
+
+      expect(appCode(error)).toBe('P0007');
+      expect(context.publisher.ofType('video.processing.completed')).toEqual([]);
+      expect(context.metrics.finished[0]?.result).toBe('failed');
     });
 
     it('started not confirmed → transient before touching the disk', async () => {
@@ -542,6 +616,54 @@ describe('ProcessVideoUseCase', () => {
       await expect(context.useCase.execute(command())).resolves.toMatchObject({
         status: 'completed',
       });
+    });
+  });
+
+  describe('delivery abandoned (AMQP channel closed)', () => {
+    it('already aborted: publishes nothing and touches nothing', async () => {
+      const context = await withRawVideo(setup());
+      const controller = new AbortController();
+      controller.abort();
+
+      await rejection(context.useCase.execute(command({ signal: controller.signal })));
+
+      expect(context.publisher.events).toEqual([]);
+      expect(context.workDirectory.prepared).toEqual([]);
+      expect(context.metrics.finished[0]?.result).toBe('retry');
+    });
+
+    it('aborted while ffmpeg runs: the tools get the signal, no zip and no completed', async () => {
+      const context = await withRawVideo(setup());
+      const controller = new AbortController();
+      context.toolkit.onExtract = () => controller.abort();
+
+      await rejection(context.useCase.execute(command({ signal: controller.signal })));
+
+      expect(context.toolkit.calls.every((call) => call.options.signal === controller.signal)).toBe(
+        true,
+      );
+      expect(context.storage.contentOf(VIDEO.zipBucket, VIDEO.zipKey)).toBeUndefined();
+      expect(context.publisher.ofType('video.processing.completed')).toEqual([]);
+      expect(context.workDirectory.removed).toHaveLength(1);
+    });
+
+    it('aborted during the download: the source stream is destroyed', async () => {
+      const context = await withRawVideo(setup());
+      const controller = new AbortController();
+      const saveSource = context.workDirectory.saveSource.bind(context.workDirectory);
+      jest
+        .spyOn(context.workDirectory, 'saveSource')
+        .mockImplementation(async (workspace, body) => {
+          controller.abort();
+          return saveSource(workspace, body);
+        });
+
+      const error = await rejection(
+        context.useCase.execute(command({ signal: controller.signal })),
+      );
+
+      expect(error).toBeInstanceOf(RetryableError);
+      expect(context.toolkit.calls).toEqual([]);
     });
   });
 

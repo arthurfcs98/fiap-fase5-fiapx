@@ -9,6 +9,7 @@ import { VideosModule } from '../videos/videos.module';
 import { DeleteMyAccountUseCase } from './application/use-cases/delete-my-account.use-case';
 import { ExportMyDataUseCase } from './application/use-cases/export-my-data.use-case';
 import { PurgeDeliveryRecordsUseCase } from './application/use-cases/purge-delivery-records.use-case';
+import { PurgeLeftoverUploadsUseCase } from './application/use-cases/purge-leftover-uploads.use-case';
 import { PurgeOrphanObjectsUseCase } from './application/use-cases/purge-orphan-objects.use-case';
 import { USER_OBJECT_STORE } from './domain/user-object.store';
 import { S3UserObjectStore } from './infrastructure/s3-user-object.store';
@@ -30,6 +31,7 @@ import { DataRetentionJob, RETENTION_SCHEDULE } from './interfaces/jobs/data-ret
     ExportMyDataUseCase,
     DeleteMyAccountUseCase,
     PurgeOrphanObjectsUseCase,
+    PurgeLeftoverUploadsUseCase,
     PurgeDeliveryRecordsUseCase,
     {
       provide: RETENTION_SCHEDULE,

@@ -1,7 +1,7 @@
 {
   "uid": "fiapx-slos",
-  "title": "FIAP X — SLOs",
-  "description": "SLIs, orçamento de erro (7 dias) e alertas do FIAP X.",
+  "title": "FIAP Frames — SLOs",
+  "description": "SLIs, orçamento de erro (7 dias) e alertas do FIAP Frames.",
   "tags": [
     "fiapx"
   ],
@@ -52,7 +52,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "**SLOs do FIAP X (janela de 7 dias, contratos.md seção 13).** Cada linha mostra o indicador (SLI) na janela, quanto do orçamento de erro ainda resta (1 = inteiro, 0 = acabou, negativo = SLO violado) e o comportamento recente. Os alertas usam taxa de queima do orçamento. Guia: `docs/observabilidade.md`.",
+        "content": "**SLOs do FIAP Frames (janela de 7 dias, contratos.md seção 13).** Cada linha mostra o indicador (SLI) na janela, quanto do orçamento de erro ainda resta (1 = inteiro, 0 = acabou, negativo = SLO violado) e o comportamento recente. Os alertas usam taxa de queima do orçamento. Guia: `docs/observabilidade.md`.",
         "code": {
           "language": "plaintext",
           "showLineNumbers": false,
@@ -788,13 +788,248 @@
       }
     },
     {
+      "id": 24,
+      "type": "row",
+      "title": "Tempo até o resultado — meta: p95 < 5 min do upload ao COMPLETED (inclui a espera na fila)",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 25,
+      "type": "stat",
+      "title": "SLI (7 dias)",
+      "description": "Fração dos vídeos que chegaram a COMPLETED em até 5 min depois do upload (fiapx_video_turnaround_seconds): inclui a espera na fila, que o SLO de processamento não vê.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "fiapx:slo_turnaround:sli_7d",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
+            ]
+          },
+          "mappings": [],
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "textMode": "auto",
+        "wideLayout": true,
+        "showPercentChange": false
+      }
+    },
+    {
+      "id": 26,
+      "type": "gauge",
+      "title": "Orçamento de erro restante",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 25,
+        "w": 6,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "fiapx:slo_turnaround:error_budget_remaining_7d",
+          "legendFormat": "__auto",
+          "range": false,
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": -1,
+          "max": 1,
+          "decimals": 1,
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0.25
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true,
+        "orientation": "auto",
+        "minVizHeight": 75,
+        "minVizWidth": 75,
+        "sizing": "auto"
+      }
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Últimas horas",
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 25,
+        "w": 12,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "fiapx:slo_turnaround:p95_rate30m",
+          "legendFormat": "p95 upload → COMPLETED (30 min)",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 300
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
       "id": 14,
       "type": "row",
       "title": "Sucesso do pipeline — meta: >= 99% dos vídeos válidos em COMPLETED",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 24,
+        "y": 31,
         "w": 24,
         "h": 1
       },
@@ -811,7 +1046,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 25,
+        "y": 32,
         "w": 6,
         "h": 6
       },
@@ -880,7 +1115,7 @@
       },
       "gridPos": {
         "x": 6,
-        "y": 25,
+        "y": 32,
         "w": 6,
         "h": 6
       },
@@ -954,7 +1189,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 25,
+        "y": 32,
         "w": 12,
         "h": 6
       },
@@ -976,7 +1211,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum(increase(fiapx_videos_failed_total{error_code=~\"P0098|P0099\"}[1h])) or vector(0)",
+          "expr": "sum(increase(fiapx_videos_failed_total{error_code=~\"P0098|P0099|P0007\"}[1h])) or vector(0)",
           "legendFormat": "falha do sistema P0098/P0099 (1 h)",
           "range": true,
           "instant": false
@@ -1033,7 +1268,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 31,
+        "y": 38,
         "w": 24,
         "h": 1
       },
@@ -1050,7 +1285,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 32,
+        "y": 39,
         "w": 6,
         "h": 6
       },
@@ -1118,7 +1353,7 @@
       },
       "gridPos": {
         "x": 6,
-        "y": 32,
+        "y": 39,
         "w": 6,
         "h": 6
       },
@@ -1190,7 +1425,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 32,
+        "y": 39,
         "w": 12,
         "h": 6
       },
@@ -1269,7 +1504,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 38,
+        "y": 45,
         "w": 24,
         "h": 1
       },
@@ -1279,14 +1514,14 @@
       "id": 23,
       "type": "table",
       "title": "Alertas disparados agora (regras do Prometheus)",
-      "description": "Os 8 alertas do contrato. Detalhes e histórico: menu Alerting -> Alert rules (Data source-managed).",
+      "description": "Os 10 alertas do contrato. Detalhes e histórico: menu Alerting -> Alert rules (Data source-managed).",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
       "gridPos": {
         "x": 0,
-        "y": 39,
+        "y": 46,
         "w": 24,
         "h": 7
       },

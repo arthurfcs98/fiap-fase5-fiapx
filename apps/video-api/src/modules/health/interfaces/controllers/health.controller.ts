@@ -1,21 +1,29 @@
-import { Controller, Get, Inject } from '@nestjs/common';
-import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import type { HealthCheckResult, HealthIndicatorFunction } from '@nestjs/terminus';
-import { HealthCheck, HealthCheckService } from '@nestjs/terminus';
+import { Controller, Get, HttpStatus, Inject, Res } from '@nestjs/common';
+import {
+  ApiOkResponse,
+  ApiOperation,
+  ApiServiceUnavailableResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Public } from '../../../auth/interfaces/decorators/public.decorator';
 import type { ApiConfig } from '../../../../config/api.config';
 import { API_CONFIG, SERVICE_NAME } from '../../../../config/api.config';
-import { READINESS_CHECKS } from '../../health.constants';
-import { LivenessResponseDto } from '../dto/liveness.response.dto';
+import type { CachedReadiness } from '../../infrastructure/cached-readiness';
+import { CACHED_READINESS } from '../../infrastructure/cached-readiness';
+import { LivenessResponseDto, ReadinessResponseDto } from '../dto/liveness.response.dto';
+
+/** The slice of the Express response the readiness route touches. */
+interface StatusResponse {
+  status(code: number): unknown;
+}
 
 @ApiTags('health')
 @Public()
 @Controller('health')
 export class HealthController {
   constructor(
-    private readonly health: HealthCheckService,
     @Inject(API_CONFIG) private readonly config: ApiConfig,
-    @Inject(READINESS_CHECKS) private readonly readinessChecks: HealthIndicatorFunction[],
+    @Inject(CACHED_READINESS) private readonly readiness: CachedReadiness,
   ) {}
 
   @Get('live')
@@ -30,14 +38,22 @@ export class HealthController {
   }
 
   @Get('ready')
-  @HealthCheck()
   @ApiOperation({
     summary: 'Readiness: dependências necessárias para atender',
     description:
-      'Postgres (SELECT 1) e storage (os dois buckets). RabbitMQ fica de fora: com o outbox a ' +
-      'API aceita uploads com o broker fora. Responde 503 se alguma checagem falhar.',
+      'Postgres (SELECT 1) e storage (os dois buckets), com o resultado reaproveitado por 2 s. ' +
+      'RabbitMQ fica de fora: com o outbox a API aceita uploads com o broker fora. Responde 503 ' +
+      'se alguma checagem falhar; o motivo fica só no log (a rota é pública).',
   })
-  ready(): Promise<HealthCheckResult> {
-    return this.health.check(this.readinessChecks);
+  @ApiOkResponse({ type: ReadinessResponseDto })
+  @ApiServiceUnavailableResponse({ type: ReadinessResponseDto })
+  async ready(@Res({ passthrough: true }) response: StatusResponse): Promise<ReadinessResponseDto> {
+    const ready = await this.readiness.isReady();
+    if (!ready) response.status(HttpStatus.SERVICE_UNAVAILABLE);
+    return {
+      status: ready ? 'ok' : 'unavailable',
+      service: SERVICE_NAME,
+      version: this.config.APP_VERSION,
+    };
   }
 }

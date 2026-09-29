@@ -1,7 +1,13 @@
 import type { AppError } from '../app-error';
 import { AppErrorException } from '../app-error.exception';
 import { NonRetryableError } from '../processing-errors';
-import { AuthErrors, CommonErrors, ProcessingErrors, VideoErrors } from './index';
+import {
+  AuthErrors,
+  CommonErrors,
+  PROCESSING_ERROR_CODES,
+  ProcessingErrors,
+  VideoErrors,
+} from './index';
 
 type HttpCase = [() => AppErrorException, number, string, string];
 type ProcessingCase = [() => NonRetryableError, string, string];
@@ -18,6 +24,7 @@ const httpErrors: HttpCase[] = [
   [() => VideoErrors.NOT_READY('v1', 'PROCESSING'), 409, 'V0004', 'VIDEO_NOT_READY'],
   [() => VideoErrors.INVALID_DOWNLOAD_SIGNATURE(), 403, 'V0005', 'INVALID_DOWNLOAD_SIGNATURE'],
   [() => VideoErrors.ZIP_EXPIRED('v1'), 410, 'V0006', 'ZIP_EXPIRED'],
+  [() => VideoErrors.TOO_MANY_PENDING_VIDEOS(5, 15), 429, 'V0007', 'TOO_MANY_PENDING_VIDEOS'],
   [() => CommonErrors.VALIDATION(['campo']), 400, 'X0001', 'VALIDATION'],
   [() => CommonErrors.INTERNAL(), 500, 'X0002', 'INTERNAL'],
   [() => CommonErrors.UNAVAILABLE(5), 503, 'X0003', 'UNAVAILABLE'],
@@ -29,6 +36,8 @@ const processingErrors: ProcessingCase[] = [
   [() => ProcessingErrors.VIDEO_TOO_LONG(900, 600), 'P0003', 'VIDEO_TOO_LONG'],
   [() => ProcessingErrors.FFMPEG_TIMEOUT(600_000), 'P0004', 'FFMPEG_TIMEOUT'],
   [() => ProcessingErrors.SOURCE_NOT_FOUND(), 'P0005', 'SOURCE_NOT_FOUND'],
+  [() => ProcessingErrors.OUTPUT_TOO_LARGE(), 'P0006', 'OUTPUT_TOO_LARGE'],
+  [() => ProcessingErrors.STORAGE_FULL(), 'P0007', 'STORAGE_FULL'],
   [() => ProcessingErrors.RETRIES_EXHAUSTED(4), 'P0098', 'RETRIES_EXHAUSTED'],
   [() => ProcessingErrors.PROCESSING_ABORTED(), 'P0099', 'PROCESSING_ABORTED'],
 ];
@@ -50,6 +59,10 @@ describe('Catálogo de erros', () => {
     expect(error.appError.code).toBe(code);
     expect(error.appError.message).toBe(message);
     expect(error.appError.httpStatus).toBe(422);
+  });
+
+  it('PROCESSING_ERROR_CODES lista exatamente os códigos P do catálogo', () => {
+    expect([...PROCESSING_ERROR_CODES]).toEqual(processingErrors.map(([, code]) => code));
   });
 
   it('não repete códigos entre domínios', () => {
@@ -77,6 +90,14 @@ describe('Catálogo de erros', () => {
       status: 'QUEUED',
     });
     expect(CommonErrors.UNAVAILABLE(5).appError.metadata).toEqual({ retryAfterSeconds: 5 });
+    expect(VideoErrors.TOO_MANY_PENDING_VIDEOS(5, 15).appError.metadata).toEqual({
+      limit: 5,
+      retryAfterSeconds: 15,
+    });
+    expect(ProcessingErrors.OUTPUT_TOO_LARGE('ENOSPC').appError.metadata).toEqual({
+      detail: 'ENOSPC',
+    });
+    expect(ProcessingErrors.OUTPUT_TOO_LARGE().appError.metadata).toEqual({});
     expect(CommonErrors.VALIDATION().appError.metadata).toEqual({ fields: [] });
     expect(AuthErrors.EMAIL_ALREADY_REGISTERED().appError.metadata).toEqual({});
     expect(AuthErrors.INVALID_PASSWORD_CONFIRMATION().appError.metadata).toEqual({});

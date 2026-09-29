@@ -53,6 +53,12 @@ export interface VideoRepository {
   lockExpiredZips(completedBefore: Date, limit: number): Promise<Video[]>;
   /** Deletes the history and the videos of the user; returns the deleted video ids. */
   deleteAllByOwner(userId: string): Promise<string[]>;
+  /** Videos of the user still waiting for a result (QUEUED or PROCESSING). */
+  countPendingByOwner(userId: string): Promise<number>;
+  /** Status of each existing video among `ids` (missing ids have no row). */
+  statusesOf(ids: readonly string[]): Promise<Map<string, VideoStatus>>;
+  /** Bytes of the zips still stored (not expired): the `fiapx-zips` usage. */
+  sumStoredZipBytes(): Promise<number>;
 }
 
 export const VIDEO_REPOSITORY = Symbol('VIDEO_REPOSITORY');

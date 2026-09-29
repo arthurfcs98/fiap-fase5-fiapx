@@ -9,7 +9,10 @@ import { messagingConfigShape } from '@fiapx/messaging';
 import { metricsServerConfigShape } from '@fiapx/observability';
 import { storageConfigShape } from '@fiapx/storage';
 import { z } from 'zod';
-import { DEFAULT_THROTTLE_LIMITS } from '../shared/infrastructure/throttling/throttle';
+import {
+  DEFAULT_LOGIN_IP_LIMIT,
+  DEFAULT_THROTTLE_LIMITS,
+} from '../shared/infrastructure/throttling/throttle';
 
 export const SERVICE_NAME = 'video-api';
 
@@ -51,6 +54,16 @@ export const apiConfigSchema = z.object({
     .default('http://localhost:3000'),
   /** Upload limit per file (95 MB = Cloudflare proxy limit). */
   MAX_UPLOAD_MB: z.coerce.number().int().min(1).max(5_120).default(95),
+  /**
+   * Uploads streamed at the same time by ONE replica (each holds ~10 MiB of S3 part buffers):
+   * beyond it `503 X0003` + `Retry-After` (the frontend retries). Sized for the 320 MiB pod.
+   */
+  MAX_CONCURRENT_UPLOADS: z.coerce.number().int().min(1).max(256).default(8),
+  /**
+   * Videos one user may have in progress (uploading, QUEUED or PROCESSING): beyond it
+   * `429 V0007` + `Retry-After`. Keeps one user from filling the queue and `fiapx-raw`.
+   */
+  MAX_PENDING_VIDEOS_PER_USER: z.coerce.number().int().min(1).default(5),
   /** Allowed CORS origins (comma separated). Empty = no CORS headers (same origin only). */
   CORS_ORIGIN: csvList.optional(),
   /**
@@ -64,6 +77,11 @@ export const apiConfigSchema = z.object({
   THROTTLE_REGISTER_LIMIT: z.coerce.number().int().min(1).default(DEFAULT_THROTTLE_LIMITS.register),
   /** Logins per minute per client IP + e-mail (contract: 5). */
   THROTTLE_LOGIN_LIMIT: z.coerce.number().int().min(1).default(DEFAULT_THROTTLE_LIMITS.login),
+  /**
+   * Logins per minute per client IP, whatever the e-mail (each costs a bcrypt check): bounds
+   * the CPU an attacker rotating e-mails can burn.
+   */
+  THROTTLE_LOGIN_IP_LIMIT: z.coerce.number().int().min(1).default(DEFAULT_LOGIN_IP_LIMIT),
   /** Uploads per minute per user. */
   THROTTLE_UPLOAD_LIMIT: z.coerce.number().int().min(1).default(DEFAULT_THROTTLE_LIMITS.upload),
   /** Privacy policy version stored with the consent (`users.privacy_policy_version`). */

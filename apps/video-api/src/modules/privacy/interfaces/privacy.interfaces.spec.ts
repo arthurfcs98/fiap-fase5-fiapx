@@ -9,7 +9,13 @@ import type { PurgeDeliveryRecordsUseCase } from '../application/use-cases/purge
 import type { PurgeOrphanObjectsUseCase } from '../application/use-cases/purge-orphan-objects.use-case';
 import { MeController } from './controllers/me.controller';
 import { deleteAccountSchema } from './dto/privacy.dto';
-import { DATA_RETENTION_JOB, DataRetentionJob } from './jobs/data-retention.job';
+import type { PurgeLeftoverUploadsUseCase } from '../application/use-cases/purge-leftover-uploads.use-case';
+import {
+  DATA_RETENTION_FIRST_RUN,
+  DATA_RETENTION_JOB,
+  DataRetentionJob,
+  FIRST_RUN_DELAY_MS,
+} from './jobs/data-retention.job';
 
 describe('MeController', () => {
   it('GET /api/me/data exports; DELETE /api/me passes the correlation id', async () => {
@@ -42,28 +48,61 @@ describe('MeController', () => {
 });
 
 describe('DataRetentionJob', () => {
-  function job(overrides: { zips?: jest.Mock; orphans?: jest.Mock; delivery?: jest.Mock } = {}) {
+  function job(
+    overrides: {
+      zips?: jest.Mock;
+      orphans?: jest.Mock;
+      leftovers?: jest.Mock;
+      delivery?: jest.Mock;
+      intervalMs?: number;
+      registry?: SchedulerRegistry;
+    } = {},
+  ) {
     const zips = overrides.zips ?? jest.fn().mockResolvedValue({});
     const orphans = overrides.orphans ?? jest.fn().mockResolvedValue({});
+    const leftovers = overrides.leftovers ?? jest.fn().mockResolvedValue({});
     const delivery = overrides.delivery ?? jest.fn().mockResolvedValue({});
     return {
       zips,
       orphans,
+      leftovers,
       delivery,
       job: new DataRetentionJob(
         { execute: zips } as unknown as ExpireZipsUseCase,
         { execute: orphans } as unknown as PurgeOrphanObjectsUseCase,
+        { execute: leftovers } as unknown as PurgeLeftoverUploadsUseCase,
         { execute: delivery } as unknown as PurgeDeliveryRecordsUseCase,
-        { intervalMs: 10_000 },
-        new SchedulerRegistry(),
+        { intervalMs: overrides.intervalMs ?? 10_000 },
+        overrides.registry ?? new SchedulerRegistry(),
       ),
     };
   }
 
-  it('runs the three retention tasks', async () => {
-    const { job: retention, zips, orphans, delivery } = job();
+  it('runs the four retention tasks', async () => {
+    const { job: retention, zips, orphans, leftovers, delivery } = job();
     await retention.run();
-    expect([zips, orphans, delivery].map((fn) => fn.mock.calls.length)).toEqual([1, 1, 1]);
+    expect([zips, orphans, leftovers, delivery].map((fn) => fn.mock.calls.length)).toEqual([
+      1, 1, 1, 1,
+    ]);
+  });
+
+  it('first run 60 s after the boot (not a full hour), then every interval', async () => {
+    jest.useFakeTimers();
+    try {
+      const registry = new SchedulerRegistry();
+      const { job: retention, zips } = job({ intervalMs: 3_600_000, registry });
+
+      retention.onApplicationBootstrap();
+      expect(registry.getTimeouts()).toEqual([DATA_RETENTION_FIRST_RUN]);
+      await jest.advanceTimersByTimeAsync(FIRST_RUN_DELAY_MS - 1);
+      expect(zips).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(1);
+      expect(zips).toHaveBeenCalledTimes(1);
+
+      registry.deleteInterval(DATA_RETENTION_JOB);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('a failing task does not skip the others', async () => {
@@ -81,20 +120,15 @@ describe('DataRetentionJob', () => {
   it('registers an interval with the configured period (cleared by @nestjs/schedule)', async () => {
     jest.useFakeTimers();
     try {
-      const zips = jest.fn().mockResolvedValue({});
       const registry = new SchedulerRegistry();
-      const retention = new DataRetentionJob(
-        { execute: zips } as unknown as ExpireZipsUseCase,
-        { execute: jest.fn().mockResolvedValue({}) } as unknown as PurgeOrphanObjectsUseCase,
-        { execute: jest.fn().mockResolvedValue({}) } as unknown as PurgeDeliveryRecordsUseCase,
-        { intervalMs: 10_000 },
-        registry,
-      );
+      const { job: retention, zips } = job({ registry });
 
       retention.onApplicationBootstrap();
       expect(registry.getIntervals()).toEqual([DATA_RETENTION_JOB]);
+      expect(registry.getTimeouts()).toEqual([]);
       await jest.advanceTimersByTimeAsync(9_999);
       expect(zips).not.toHaveBeenCalled();
+      // Interval shorter than 60 s: the first tick is the first run.
       await jest.advanceTimersByTimeAsync(1);
       expect(zips).toHaveBeenCalledTimes(1);
 

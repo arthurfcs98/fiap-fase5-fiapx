@@ -7,6 +7,7 @@ import {
 } from '../../../../shared/infrastructure/database/pg-errors';
 import type { StatusTransition } from '../../domain/video';
 import { Video } from '../../domain/video';
+import type { VideoStatus } from '../../domain/video-status';
 import type {
   HistoryEntry,
   VideoListQuery,
@@ -134,6 +135,32 @@ export class TypeOrmVideoRepository implements VideoRepository {
       order: { completedAt: 'ASC' },
     });
     return rows.map(restore);
+  }
+
+  async countPendingByOwner(userId: string): Promise<number> {
+    const rows = await this.manager.query<{ pending: number }[]>(
+      `SELECT count(*)::int AS pending FROM videos
+        WHERE user_id = $1 AND status IN ('QUEUED', 'PROCESSING')`,
+      [userId],
+    );
+    return rows[0]?.pending ?? 0;
+  }
+
+  async statusesOf(ids: readonly string[]): Promise<Map<string, VideoStatus>> {
+    if (ids.length === 0) return new Map();
+    const rows = await this.manager.query<{ id: string; status: VideoStatus }[]>(
+      `SELECT id, status FROM videos WHERE id = ANY($1::uuid[])`,
+      [[...ids]],
+    );
+    return new Map(rows.map((row) => [row.id, row.status]));
+  }
+
+  async sumStoredZipBytes(): Promise<number> {
+    const rows = await this.manager.query<{ bytes: string | number | null }[]>(
+      `SELECT COALESCE(sum(zip_size_bytes), 0)::bigint AS bytes FROM videos
+        WHERE zip_key IS NOT NULL AND expired_at IS NULL`,
+    );
+    return Number(rows[0]?.bytes ?? 0);
   }
 
   async deleteAllByOwner(userId: string): Promise<string[]> {

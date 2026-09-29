@@ -6,6 +6,8 @@ import type { ApiConfig } from '../../config/api.config';
 import { API_CONFIG } from '../../config/api.config';
 import { REDIS_CLIENT } from '../../shared/infrastructure/redis/redis.constants';
 import { DOWNLOAD_SIGNER } from './application/ports/download.signer';
+import type { VideoRepository } from './domain/video.repository';
+import { VIDEO_REPOSITORY } from './domain/video.repository';
 import { FILE_SIGNATURE_INSPECTOR } from './application/ports/file-signature.inspector';
 import { IDEMPOTENCY_CACHE } from './application/ports/idempotency.cache';
 import { VIDEO_METRICS } from './application/ports/video.metrics';
@@ -21,12 +23,18 @@ import { UploadVideoUseCase } from './application/use-cases/upload-video.use-cas
 import { VIDEO_SETTINGS, videoSettingsFromConfig } from './application/video.settings';
 import { FileTypeSignatureInspector } from './infrastructure/file-signature/file-type-signature.inspector';
 import { RedisIdempotencyCache } from './infrastructure/idempotency/redis-idempotency.cache';
-import { PrometheusVideoMetrics } from './infrastructure/metrics/prometheus-video.metrics';
+import {
+  PrometheusVideoMetrics,
+  registerZipStorageGauge,
+} from './infrastructure/metrics/prometheus-video.metrics';
 import { HmacDownloadSigner } from './infrastructure/signing/hmac-download.signer';
 import { VideoDeadLetterConsumer } from './interfaces/consumers/video-dead-letter.consumer';
 import { VideoProcessingConsumer } from './interfaces/consumers/video-processing.consumer';
 import { DownloadsController } from './interfaces/controllers/downloads.controller';
 import { VideosController } from './interfaces/controllers/videos.controller';
+import { UPLOAD_SLOTS, UploadSlots } from './interfaces/http/upload-slots';
+
+export const ZIP_STORAGE_GAUGE = Symbol('ZIP_STORAGE_GAUGE');
 
 /**
  * Videos: upload, listing, detail, signed download, the consumers of the processing results
@@ -48,6 +56,11 @@ import { VideosController } from './interfaces/controllers/videos.controller';
     },
     { provide: FILE_SIGNATURE_INSPECTOR, useClass: FileTypeSignatureInspector },
     {
+      provide: UPLOAD_SLOTS,
+      inject: [API_CONFIG],
+      useFactory: (config: ApiConfig) => new UploadSlots(config.MAX_CONCURRENT_UPLOADS),
+    },
+    {
       provide: IDEMPOTENCY_CACHE,
       inject: [REDIS_CLIENT],
       useFactory: (redis: Redis) => new RedisIdempotencyCache(redis),
@@ -56,6 +69,12 @@ import { VideosController } from './interfaces/controllers/videos.controller';
       provide: VIDEO_METRICS,
       inject: [METRICS_REGISTRY],
       useFactory: (registry: Registry) => new PrometheusVideoMetrics(registry),
+    },
+    {
+      provide: ZIP_STORAGE_GAUGE,
+      inject: [METRICS_REGISTRY, VIDEO_REPOSITORY],
+      useFactory: (registry: Registry, videos: VideoRepository) =>
+        registerZipStorageGauge(registry, videos),
     },
     RawVideoCleanup,
     UploadVideoUseCase,

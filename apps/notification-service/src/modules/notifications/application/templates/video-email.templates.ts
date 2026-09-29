@@ -1,8 +1,12 @@
 import type { NotificationType } from '../../domain/notification';
-import { escapeHtml, singleLine, truncateText } from './text';
+import { escapeHtml, linkSafeText, singleLine, truncateText } from './text';
 
 /** File names are shown truncated (long names break mail clients' layouts). */
-export const ORIGINAL_NAME_MAX_LENGTH = 80;
+export const ORIGINAL_NAME_MAX_LENGTH = 60;
+
+/** Shown when nothing of the user's text survives {@link linkSafeText}. */
+const FALLBACK_NAME = 'usuário';
+const FALLBACK_FILE = 'enviado';
 
 /** Fixed subjects: no user content in headers (no header injection, nothing personal). */
 export const EMAIL_SUBJECTS: Readonly<Record<NotificationType, string>> = {
@@ -33,14 +37,15 @@ const BRAND_COLOR = '#2f5bd3';
 const FOOTER = 'E-mail automático do FIAP Frames. Não responda a esta mensagem.';
 
 /**
- * `video.failed` e-mail (pt-BR). Every user value is escaped; the only link is the app home
- * page (`PUBLIC_BASE_URL`), never a download URL.
+ * `video.failed` e-mail (pt-BR). User values (name, file name) go through `linkSafeText` (no
+ * URL, domain or address can appear: the e-mails leave our domain towards unverified addresses)
+ * and are escaped; the only link is the app home page (`PUBLIC_BASE_URL`), never a download URL.
  */
 export function renderVideoFailedEmail(
   data: VideoFailedTemplateData,
   publicBaseUrl: string,
 ): RenderedEmail {
-  const name = singleLine(data.userName);
+  const name = displayName(data.userName);
   const file = displayFileName(data.originalName);
   const reason = singleLine(data.errorMessage);
   const code = singleLine(data.errorCode);
@@ -73,7 +78,7 @@ export function renderVideoCompletedEmail(
   data: VideoCompletedTemplateData,
   publicBaseUrl: string,
 ): RenderedEmail {
-  const name = singleLine(data.userName);
+  const name = displayName(data.userName);
   const file = displayFileName(data.originalName);
   const frames = framesLabel(data.frameCount);
   const url = homeUrl(publicBaseUrl);
@@ -98,8 +103,22 @@ export function renderVideoCompletedEmail(
   };
 }
 
+function displayName(userName: string): string {
+  return truncateText(linkSafeText(userName), ORIGINAL_NAME_MAX_LENGTH) || FALLBACK_NAME;
+}
+
+/** `Férias 2026.MP4` → `Férias 2026 (.mp4)`: base name made link-safe + the extension. */
 function displayFileName(originalName: string): string {
-  return truncateText(singleLine(originalName), ORIGINAL_NAME_MAX_LENGTH);
+  const name = singleLine(originalName);
+  const dot = name.lastIndexOf('.');
+  const extension = dot > 0 ? name.slice(dot + 1).toLowerCase() : '';
+  const hasExtension = /^[a-z0-9]{1,5}$/.test(extension);
+  const base = truncateText(
+    linkSafeText(hasExtension ? name.slice(0, dot) : name),
+    ORIGINAL_NAME_MAX_LENGTH,
+  );
+  const shown = base || FALLBACK_FILE;
+  return hasExtension ? `${shown} (.${extension})` : shown;
 }
 
 function homeUrl(publicBaseUrl: string): string {

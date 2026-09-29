@@ -1,11 +1,11 @@
-# Carrega os dashboards JSON do ConfigMap grafana-dashboards (pasta "FIAP X").
+# Carrega os dashboards JSON do ConfigMap grafana-dashboards (pasta "FIAP Frames").
 # allowUiUpdates: false -> a fonte da verdade é o JSON no git; mudança feita na UI não
 # sobrevive a um reinício (exporte o JSON e faça commit).
 apiVersion: 1
 
 providers:
   - name: fiapx
-    folder: FIAP X
+    folder: FIAP Frames
     type: file
     disableDeletion: true
     allowUiUpdates: false

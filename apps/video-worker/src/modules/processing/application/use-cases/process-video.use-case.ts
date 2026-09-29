@@ -6,9 +6,10 @@ import { createEvent } from '@fiapx/contracts';
 import type { EventPublisher } from '@fiapx/messaging';
 import { EVENT_PUBLISHER } from '@fiapx/messaging';
 import type { IObjectStorage, ObjectMetadata, ObjectStream } from '@fiapx/storage';
-import { OBJECT_STORAGE, ObjectNotFoundError } from '@fiapx/storage';
+import { OBJECT_STORAGE, ObjectNotFoundError, StorageQuotaExceededError } from '@fiapx/storage';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { FrameFile } from '../../domain/frames';
+import { FRAME_OUTPUT_LIMITS, maxFramesFor } from '../../domain/frames';
 import { MediaToolError } from '../../domain/media-tool.error';
 import type { IFrameArchiver } from '../../domain/ports/frame-archiver.port';
 import { FRAME_ARCHIVER } from '../../domain/ports/frame-archiver.port';
@@ -32,6 +33,11 @@ export interface ProcessVideoCommand {
   /** `x-retry-count` (0 on the first attempt). */
   retryCount: number;
   video: PayloadOf<'video.uploaded'>;
+  /**
+   * Aborted when the AMQP channel of the delivery closes: the broker redelivers the message, so
+   * this run stops (ffprobe/ffmpeg killed, transfers aborted) and never publishes a result.
+   */
+  signal?: AbortSignal;
 }
 
 export type ProcessVideoOutcome = {
@@ -50,16 +56,19 @@ export const ZIP_CONTENT_TYPE = 'application/zip';
  * Worker pipeline for one `video.uploaded` message (contratos.md, section 9):
  * 1. envelope already validated by the consumer runner;
  * 2. HEAD of the deterministic zip key: it exists → republish `completed` (idempotency);
- * 3. publish `started`; 4. download the raw video to `<WORK_DIR>/<videoId>/`;
- * 5. ffprobe (timeout, supported container, video stream, `MAX_VIDEO_DURATION_S`);
- * 6. ffmpeg `fps=1` → `frame_%04d.png` (niced, killed at `FFMPEG_TIMEOUT_MS`);
+ * 3. publish `started`; 4. download the raw video to `<WORK_DIR>/<videoId>/<runId>/`;
+ * 5. ffprobe (timeout, whitelisted container, video stream, `MAX_VIDEO_DURATION_S`);
+ * 6. ffmpeg `fps=1` → `frame_%04d.png` (niced, killed at `FFMPEG_TIMEOUT_MS`), at most one frame
+ *    per second of `MAX_VIDEO_DURATION_S` (a container without a duration cannot bypass the
+ *    limit) and at most 1920 px on the longest side;
  * 7. streaming zip (store) → multipart upload with `video-id`/`frame-count` metadata;
  * 8. publish `completed` (publisher confirm), then the runner acks;
- * 9. `finally`: remove `<WORK_DIR>/<videoId>`.
+ * 9. `finally`: remove the run folder.
  *
- * Errors leave as {@link RetryableError} (transient: `.retry.N`, then DLX → P0099) or
- * {@link NonRetryableError} (P0001/P0002/P0003/P0004/P0005: the consumer publishes
- * `video.processing.failed` and acks). Every publish waits for the broker confirm.
+ * Errors leave as {@link RetryableError} (transient: `.retry.N`, then DLX → P0098/P0099) or
+ * {@link NonRetryableError} (P0001...P0007: the consumer publishes `video.processing.failed`
+ * and acks). Every publish waits for the broker confirm. When `signal` aborts, the run stops
+ * and publishes nothing (the redelivered copy does the work).
  */
 @Injectable()
 export class ProcessVideoUseCase {
@@ -86,6 +95,10 @@ export class ProcessVideoUseCase {
       this.logger.log({ msg: `Video processed (${outcome.status})`, ...log, ...outcome });
       return outcome;
     } catch (error) {
+      if (command.signal?.aborted) {
+        this.logger.warn({ msg: 'Job abandoned: the delivery channel closed', ...log });
+        throw error;
+      }
       const failure = toProcessingFailure(error);
       if (failure instanceof NonRetryableError) {
         result = 'failed';
@@ -108,7 +121,7 @@ export class ProcessVideoUseCase {
     command: ProcessVideoCommand,
     startedAt: number,
   ): Promise<ProcessVideoOutcome> {
-    const { video } = command;
+    const { video, signal } = command;
     const attempt = command.retryCount + 1;
 
     const existing = await this.findExistingZip(video);
@@ -125,16 +138,22 @@ export class ProcessVideoUseCase {
         command.correlationId,
         { id: workerEventId(command.messageId, 'video.processing.started', attempt) },
       ),
+      signal,
     );
 
     const workspace = await this.prepareWorkspace(video);
     try {
-      await this.download(video, workspace);
-      await this.probe(workspace, command.retryCount);
-      await this.extractFrames(workspace, command.retryCount);
+      await this.download(video, workspace, signal);
+      await this.probe(workspace, command.retryCount, signal);
+      const maxFrames = maxFramesFor(this.settings.maxVideoDurationS);
+      await this.extractFrames(workspace, command.retryCount, maxFrames + 1, signal);
       const frames = await this.workDirectory.listFrames(workspace);
       if (frames.length === 0) throw ProcessingErrors.NO_FRAMES();
-      const zipSizeBytes = await this.uploadZip(video, frames);
+      if (frames.length > maxFrames) {
+        // The container hid or understated its duration: fps=1 gave away the real length.
+        throw ProcessingErrors.VIDEO_TOO_LONG(frames.length, this.settings.maxVideoDurationS);
+      }
+      const zipSizeBytes = await this.uploadZip(video, frames, signal);
       const durationMs = elapsedMs(startedAt);
       await this.publishCompleted(command, frames.length, zipSizeBytes, durationMs);
       return { status: 'completed', frameCount: frames.length, zipSizeBytes, durationMs };
@@ -183,6 +202,7 @@ export class ProcessVideoUseCase {
   private async download(
     video: PayloadOf<'video.uploaded'>,
     workspace: JobWorkspace,
+    signal: AbortSignal | undefined,
   ): Promise<void> {
     let source: ObjectStream;
     try {
@@ -191,19 +211,28 @@ export class ProcessVideoUseCase {
       if (error instanceof ObjectNotFoundError) throw ProcessingErrors.SOURCE_NOT_FOUND();
       throw error;
     }
+    const stop = () => source.body.destroy(new Error('delivery abandoned: download aborted'));
+    if (signal?.aborted) stop();
+    else signal?.addEventListener('abort', stop, { once: true });
     try {
       await this.workDirectory.saveSource(workspace, source.body);
     } catch (error) {
       throw new RetryableError(`SOURCE_DOWNLOAD_FAILED: ${describe(error)}`, { cause: error });
+    } finally {
+      signal?.removeEventListener('abort', stop);
     }
   }
 
   /** Step 5. */
-  private async probe(workspace: JobWorkspace, retryCount: number): Promise<void> {
+  private async probe(
+    workspace: JobWorkspace,
+    retryCount: number,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
     const timeoutMs = this.settings.ffprobeTimeoutMs;
     let probe: VideoProbe;
     try {
-      probe = await this.toolkit.probe(workspace.sourcePath, { timeoutMs });
+      probe = await this.toolkit.probe(workspace.sourcePath, { timeoutMs, signal });
     } catch (error) {
       throw this.mediaFailure(error, retryCount, timeoutMs);
     }
@@ -216,19 +245,34 @@ export class ProcessVideoUseCase {
   }
 
   /** Step 6. */
-  private async extractFrames(workspace: JobWorkspace, retryCount: number): Promise<void> {
+  private async extractFrames(
+    workspace: JobWorkspace,
+    retryCount: number,
+    frameLimit: number,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
     const timeoutMs = this.settings.ffmpegTimeoutMs;
     try {
-      await this.toolkit.extractFrames(workspace.sourcePath, workspace.framesDir, { timeoutMs });
+      await this.toolkit.extractFrames(workspace.sourcePath, workspace.framesDir, {
+        timeoutMs,
+        signal,
+        frameLimit,
+        maxDimension: FRAME_OUTPUT_LIMITS.maxDimension,
+        maxTotalBytes: this.settings.maxFramesBytes,
+      });
     } catch (error) {
       throw this.mediaFailure(error, retryCount, timeoutMs);
     }
   }
 
-  /** Step 7: resolves with the zip size counted while uploading. */
+  /**
+   * Step 7: resolves with the zip size counted while uploading. A full zip bucket is permanent
+   * (P0007): retrying in minutes cannot help, only the retention frees space.
+   */
   private async uploadZip(
     video: PayloadOf<'video.uploaded'>,
     frames: readonly FrameFile[],
+    signal: AbortSignal | undefined,
   ): Promise<number> {
     const body = this.archiver.archive(frames);
     try {
@@ -241,9 +285,11 @@ export class ProcessVideoUseCase {
           [ZIP_METADATA.videoId]: video.videoId,
           [ZIP_METADATA.frameCount]: String(frames.length),
         },
+        signal,
       });
       return sizeBytes;
     } catch (error) {
+      if (error instanceof StorageQuotaExceededError) throw ProcessingErrors.STORAGE_FULL();
       throw new RetryableError(`ZIP_UPLOAD_FAILED: ${describe(error)}`, { cause: error });
     } finally {
       // Upload failed half-way: stop archiving (no-op when the stream already ended).
@@ -270,11 +316,16 @@ export class ProcessVideoUseCase {
         command.correlationId,
         { id: workerEventId(command.messageId, 'video.processing.completed') },
       ),
+      command.signal,
     );
   }
 
-  /** Publisher confirm failures are transient: the retry finds the zip and republishes. */
-  private async publish(event: FiapxEvent): Promise<void> {
+  /**
+   * Publisher confirm failures are transient: the retry finds the zip and republishes. Never
+   * publishes for an abandoned delivery (the redelivered copy owns the result).
+   */
+  private async publish(event: FiapxEvent, signal: AbortSignal | undefined): Promise<void> {
+    signal?.throwIfAborted();
     try {
       await this.publisher.publishEvent(event);
     } catch (error) {

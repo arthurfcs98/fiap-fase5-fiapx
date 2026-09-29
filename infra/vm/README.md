@@ -1,6 +1,6 @@
 # K3s na VM compartilhada: runbook de instalação, deploy e reversão
 
-Este diretório coloca o FIAP X num **K3s de nó único** dentro de uma VM que já roda outros
+Este diretório coloca o FIAP Frames num **K3s de nó único** dentro de uma VM que já roda outros
 projetos em produção, em Docker, atrás de um **edge-caddy** dono das portas 80/443. Nesta
 documentação eles são "**os vizinhos**". O objetivo nº 1 é **não atrapalhar os vizinhos**; o nº 2 é
 ter **CI/CD de ponta a ponta** (push na `main` -> testes -> imagem -> deploy no K3s -> smoke ->
@@ -182,7 +182,7 @@ está o que foi escolhido, contra o quê e por quê. O que foi **verificado em t
 | D2 | **UFW** | Plano (doc do K3s): liberar `10.42.0.0/16` e `10.43.0.0/16`. Rede: regra só na `cni0` e só nas portas 6443/10250 | `allow in on cni0 from 10.42.0.0/16 to any port 6443,10250 proto tcp` + 2 regras `route` na cni0 (só silenciam falsos `[UFW BLOCK]`) | Sem `in on cni0`, alguém forja origem `10.42.x` pela eth0 e o UFW aceita. "to any" sem porta, somado ao `route_localnet=1` que sobrou da Fase 2, deixa um pod alcançar serviços do host que só escutam em 127.0.0.1. `10.43.0.0/16` nunca é origem de pacote. **Nunca** `ufw allow 6443/tcp` (a Fase 2 fez isso). **Testado** |
 | D3 | **Reservas do kubelet** | Plano: `system-reserved`/`kube-reserved` sem números. Rede: 250m/512Mi + 250m/384Mi. Recursos: 1000m/2Gi + 500m/1Gi + eviction explícita | **Recursos**, num `KubeletConfiguration` (`kubelet-fiapx.yaml`) | Números medidos: soma dos picos dos vizinhos ~1,75 GiB. O padrão do K3s **não** despeja pod por falta de memória (só define imagefs/nodefs). **Conferido na VM**: `kubepods.slice memory.max` = 4679 MiB, `system.slice` = `max` |
 | D4 | **Quota do namespace** | Plano: ~3,5 GiB / ~2,5 vCPU. Recursos: req 1500m/2Gi, lim 6/3840Mi. CD: req 2500m/3584Mi, `services.nodeports: 0` | Números da seção 4.3 (com a observabilidade): req **1600m/2304Mi**, lim **7/4608Mi**, 20 pods, 7 PVCs, 8Gi de volumes; `services.nodeports/loadbalancers = 0` | "2,5 vCPU no total" não é aplicável por soma de limits sem sufocar postgres/rabbit (limit é teto, não reserva); o teto real de CPU é o `cpu.max` dos workers. **Testado** (NodePort barrado pela quota) |
-| D5 | **Estratégia do worker/notification** | Recursos: `maxSurge 0, maxUnavailable 1` | **`Recreate`** | Pod em terminação **conta na quota** até o fim do grace (330 s no worker). Com rolling, velho + novo somariam. `Recreate` espera o velho sair antes de criar o novo (a fila segura as mensagens). Consequência: `progressDeadlineSeconds` do worker > 330 s (480) e `ROLLOUT_TIMEOUT` do deploy = 600 s |
+| D5 | **Estratégia do worker/notification** | Recursos: `maxSurge 0, maxUnavailable 1` | **`Recreate`** | Pod em terminação **conta na quota** até o fim do grace (720 s no worker: o shutdown espera o vídeo em curso inteiro, 30 + 600 + 60 = 690 s). Com rolling, velho + novo somariam. `Recreate` espera o velho sair antes de criar o novo (a fila segura as mensagens). Consequência: `progressDeadlineSeconds` do worker > 720 s (900) e `ROLLOUT_TIMEOUT` do deploy = 900 s |
 | D6 | **Réplicas máximas** | Plano: api 1-3, worker 1-3. Recursos: 1-2 | **api 1-2 (HPA), worker 1-2 (KEDA)** | Só o worker é CPU-bound; 2 × 1 vCPU é o teto que protege os vizinhos, e mais de 2 não aumenta a vazão nesta VM. A quota foi calculada com esses máximos |
 | D7 | **NetworkPolicy** | Rede: manter o controlador (kube-router) | **`disable-network-policy: true`** | Conferido no código do kube-router: a cada sync ele faz `iptables-save -t filter` e `iptables-restore -T filter` **sem `--noflush`**, reescrevendo a tabela filter inteira (inclusive as regras do Docker). Se o Docker criar uma regra nesse intervalo, ela se perde e a borda dos vizinhos pode cair. O isolamento fica na **guarda raw** (D9), no PSA e nas credenciais por serviço |
 | D8 | **Pod Security** | Rede: padrão do cluster via arquivo de admissão. CD: rótulo no namespace | **Os dois** | Padrão `baseline` no cluster (só `kube-system` isento) + rótulos em `fiapx`/`traefik`/`keda`. **Achado no teste**: o K3s 1.36 **não tem** a flag `pod-security-admission-config-file` (avisa "Unknown flag... skipping"). Usamos `kube-apiserver-arg: admission-control-config-file=...`. **Testado** |
@@ -284,7 +284,7 @@ Ficam de propósito: /root/fiapx-k3s/ e os certificados de fiapx/frames.asdevit.
 | Workload | Réplicas | CPU req/lim | Mem req/lim | Volume (PVC) | Estratégia | Observação |
 |---|---|---|---|---|---|---|
 | video-api | 1-2 (HPA) | 150m / 500m | 160Mi / 320Mi | — | Rolling, surge 1, unavailable 0 | `--max-old-space-size=192`; `trust proxy` = `10.42.0.0/16` |
-| video-worker | 1-2 (KEDA) | 250m / 1000m | 256Mi / 512Mi | — | **Recreate**, grace 330 s | ffmpeg com `-threads` ≤ limit; `/work` emptyDir `sizeLimit: 2Gi`; ephemeral 1Gi/2560Mi |
+| video-worker | 1-2 (KEDA) | 250m / 1000m | 256Mi / 512Mi | — | **Recreate**, grace 720 s | ffmpeg com `-threads` ≤ limit; `/work` emptyDir `sizeLimit: 2Gi`; ephemeral 1Gi/2560Mi |
 | notification-service | 1 | 25m / 200m | 96Mi / 192Mi | — | **Recreate** | |
 | postgres 16 | 1 (STS) | 100m / 500m | 192Mi / 320Mi | 1Gi | STS | `shared_buffers=64MB`, `max_connections=40` |
 | rabbitmq 4.x | 1 (STS) | 100m / 500m | 256Mi / 512Mi | 1Gi | STS | `vm_memory_high_watermark.absolute=300MiB` |
@@ -360,7 +360,7 @@ usados) e o **duro** com menos de 10% (acima de ~64,2 GiB). Ou seja: o pior caso
 limiar suave, e com swap encosta no duro. Despejo libera emptyDir e logs, **não** o loop. Os
 bancos dos vizinhos (processos não-root) ainda teriam ~7,5 GiB livres nesse pior caso.
 
-Por isso: a swap (P3) só depois de liberar espaço fora do FIAP X (P8: `journalctl --vacuum-size=1G`
+Por isso: a swap (P3) só depois de liberar espaço fora do FIAP Frames (P8: `journalctl --vacuum-size=1G`
 devolve ~3 GiB e `/root/.cache` tem 6,1 GiB). Com a P8 feita, o pior caso cai para ~53-55 GiB
 (~72%), abaixo dos dois limiares.
 
@@ -596,7 +596,7 @@ falhou · 4 downgrade recusado · **5 SHA marcado como ruim** · 75 lock ocupado
    `notification-service`) **sem tag** (o deploy injeta o digest de `sha-<7>`); imagens de infra
    fixadas por digest no git.
 4. Deployments com HPA/KEDA **sem** `replicas`.
-5. `progressDeadlineSeconds`: api/notification 180, worker 480 (maior que o grace de 330 s).
+5. `progressDeadlineSeconds`: api/notification 180, worker 900 (maior que o grace de 720 s).
 6. Jobs em `infra/k8s/jobs/` (kustomization própria, **só Jobs**) com
    `fiapx.io/phase: backup|setup|migrate`, `backoffLimit: 0`, `activeDeadlineSeconds` < 300,
    `ttlSecondsAfterFinished` e comandos idempotentes. O deploy acrescenta `-<sha7>` ao nome.
@@ -835,12 +835,12 @@ Fora da VM: os DNS `fiapx` e `frames` e a Configuration Rule na Cloudflare, e os
 | P5 | Execução na VM | **Usada** na instalação. Nova janela para a seção 0.2 |
 | P6 | Réplicas máximas (api 1-2, worker 1-2) | Manter; para o vídeo, "1 -> 2 workers" já mostra o KEDA. Com 3, a quota da seção 4.3 não fecha |
 | P7 | NetworkPolicy no vídeo? | Não (D7). Se for obrigatório, reabilitar é uma linha, aceitando o risco descrito |
-| P8 | Espaço recuperável fora do FIAP X (journald 3,9 GB, `/root/.cache` 6,1 GB, imagens dangling) | Opcional; pré-requisito só da P3 |
+| P8 | Espaço recuperável fora do FIAP Frames (journald 3,9 GB, `/root/.cache` 6,1 GB, imagens dangling) | Opcional; pré-requisito só da P3 |
 | P9 | Tirar o bloco `http://` do `fiapx.caddy` | Opcional (seção 0.2, "Opcional"). Sem pressa: com o `@texto_puro` ele é inofensivo |
 | P10 | `--outside` de um host **com IPv6** | O Mac não tem IPv6: rodar uma vez de outro host (celular em 4G/5G como hotspot costuma ter) |
 | P11 | "Always Use HTTPS" na Cloudflare para o host | Opcional: a Cloudflare redirecionaria `http://` antes de chegar à origem (hoje quem redireciona é o Caddy) |
 | P12 | Regra WAF de *skip* para `/api/health/*` | Só se o smoke público do Actions tomar desafio (`cf-mitigated`) |
-| P13 | **Pôr `frames.asdevit.com` na Configuration Rule "SSL: Full (strict)"** (hoje só o `fiapx` está nela) | Recomendo já: é o endereço público oficial, e em Flexible o login e o JWT vão sem cifra entre a Cloudflare e a VM. O certificado sai sozinho (HTTP-01) depois do passo 2; confira `https://frames.asdevit.com` 404/200 pela borda local antes de mudar a regra, e `--outside` depois |
+| P13 | Pôr `frames.asdevit.com` na Configuration Rule "SSL: Full (strict)" | **Feito** (Arthur, 2026-09-28): a regra cobre o `frames.asdevit.com`, o endereço público oficial (Cloudflare → VM em HTTPS, com o certificado Let's Encrypt do Caddy conferido). O `fiapx.asdevit.com` **não está mais** na regra: continua respondendo pelo bloco `http://` + `@texto_puro` do `fiapx.caddy`, ou seja, nesse host técnico (usado pelo smoke do deploy) a Cloudflare fala HTTP com a VM. Próximo passo: pôr o `fiapx` de volta na regra e só então tirar o bloco `http://` dos dois sites (seção 0.2, "Opcional"). Até lá, as linhas de P1, D16 e das seções 0.1, 5 e 6.4 que descrevem qual host está na regra refletem o arranjo anterior |
 
 ## 13. O que foi testado
 

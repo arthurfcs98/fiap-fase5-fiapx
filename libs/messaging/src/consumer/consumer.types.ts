@@ -8,17 +8,29 @@ export interface MessageContext {
   /** AMQP `messageId` (= `event.id`): chave de idempotência (`processed_messages`). */
   messageId: string;
   correlationId: string;
-  /** `x-retry-count`: retries já feitos por falha transitória (0 na 1ª tentativa). */
+  /**
+   * Retries já feitos por falha transitória no ciclo atual (0 na 1ª tentativa). Mensagem que
+   * chegou por dead-letter ou redrive de DLQ começa em 0 (`effectiveRetryCount`).
+   */
   retryCount: number;
   /** `x-delivery-count` da quorum queue: devoluções por crash/canal fechado sem ack. */
   deliveryCount: number;
   redelivered: boolean;
   /**
-   * Motivo da morte mais recente (`rejected`, `delivery_limit`...) quando a mensagem veio do
-   * DLX (ex.: consumidor de `api.video-deadletter`). `undefined` nas filas comuns.
+   * Motivo do dead-letter que trouxe a mensagem (`rejected` = retries esgotados,
+   * `delivery_limit` = crash em loop...) quando ela veio do DLX (ex.: `api.video-deadletter`),
+   * preservado entre os retries (`readOriginDeathReason`). Nas filas comuns: `undefined` ou
+   * `expired` (voltou de uma `.retry.N`).
    */
   deathReason?: string;
   headers: MessageHeaders;
+  /**
+   * Abortado quando o canal que entregou a mensagem fecha (queda do broker, reconexão): o
+   * broker vai reentregá-la. O handler deve parar o trabalho em andamento (matar processos,
+   * abortar uploads) e NUNCA publicar resultado depois disso; o runner não dá ack nem publica
+   * cópia de retry de uma entrega abortada.
+   */
+  signal: AbortSignal;
 }
 
 /** Evento mínimo aceito pelo runner: o envelope do contrato. */
@@ -32,8 +44,10 @@ export interface ConsumableEvent {
  * Definição de um consumidor (uma por fila principal).
  *
  * Regras (contratos.md, seção 2): `handle` resolveu → ack. `RetryableError` ou erro
- * desconhecido → cópia na `.retry.N` + ack (esgotou → DLX). `NonRetryableError` →
- * `onPermanentFailure` (resultado de negócio) + ack. Envelope inválido → DLX.
+ * desconhecido → cópia na `.retry.N` + ack (esgotou → DLX). Dependência fora
+ * (`DependencyUnavailableError` ou erro de conexão) → devolve à fila sem gastar retry e pausa o
+ * consumo. `NonRetryableError` → `onPermanentFailure` (resultado de negócio) + ack. Envelope
+ * inválido → DLX.
  */
 export interface ConsumerDefinition<TSchema extends z.ZodType<ConsumableEvent>> {
   /** Fila principal (use `QUEUES.*`). */

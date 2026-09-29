@@ -1,5 +1,5 @@
 # Prometheus v3: coleta os 3 apps, RabbitMQ, Garage, KEDA, cAdvisor e a própria stack de
-# observabilidade; avalia as regras de SLO e os 8 alertas (contratos.md, seção 13).
+# observabilidade; avalia as regras de SLO e os 10 alertas (contratos.md, seção 13).
 #
 # Retenção: 3 dias (contratos.md, seção 13) OU 400 MB, o que vier primeiro (o PVC tem
 # 512Mi; infra/vm/README.md, seção 4.3). Os SLOs são de 7 dias: com 3 dias guardados, os SLIs

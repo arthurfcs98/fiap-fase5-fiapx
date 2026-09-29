@@ -10,14 +10,7 @@ export const SERVICE_NAME = 'video-worker';
 export const WORKER_CONFIG = Symbol('WORKER_CONFIG');
 
 /**
- * How long SIGTERM waits for the video being processed before closing the channel (anything
- * left unacked goes back to the queue). `stop_grace_period` / `terminationGracePeriodSeconds`
- * must be larger (330 s in compose).
- */
-export const WORKER_SHUTDOWN_TIMEOUT_MS = 300_000;
-
-/**
- * Worker variables (contratos.md, section 10): base + metrics + RabbitMQ + S3 + the four
+ * Worker variables (contratos.md, section 10): base + metrics + RabbitMQ + S3 + the
  * processing-specific ones.
  */
 export const workerConfigSchema = z.object({
@@ -27,12 +20,17 @@ export const workerConfigSchema = z.object({
   ...storageConfigShape,
   /** Unacked messages per replica (ffmpeg is CPU-bound: 1). */
   WORKER_PREFETCH: z.coerce.number().int().min(1).default(1),
-  /** Scratch directory; each job uses `<WORK_DIR>/<videoId>` and removes it at the end. */
+  /** Scratch directory; each run uses `<WORK_DIR>/<videoId>/<runId>` and removes it at the end. */
   WORK_DIR: z.string().min(1).default('/work'),
   /** ffmpeg time budget (SIGKILL when exceeded). */
   FFMPEG_TIMEOUT_MS: z.coerce.number().int().min(1).default(600_000),
   /** Longest accepted video (ffprobe), in seconds. */
   MAX_VIDEO_DURATION_S: z.coerce.number().positive().default(600),
+  /**
+   * Frames of one video on the work disk, in MiB: past it ffmpeg is stopped and the video
+   * fails with P0006. Below the `/work` size (K8s emptyDir 2 GiB: a full one evicts the pod).
+   */
+  MAX_FRAMES_MB: z.coerce.number().int().min(1).default(1536),
 });
 
 export type WorkerConfig = z.output<typeof workerConfigSchema>;

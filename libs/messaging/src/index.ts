@@ -11,5 +11,6 @@ export * from './publisher/event-publisher.port';
 export * from './publisher/message-publisher';
 export * from './retry-decision';
 export * from './topology';
+export * from './topology-cli';
 export * from './topology-setup';
 // Dublês para testes: `@fiapx/messaging/testing` (fora do barrel de produção).

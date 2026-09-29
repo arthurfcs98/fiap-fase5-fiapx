@@ -1,6 +1,7 @@
 import { readdirSync } from 'node:fs';
 import type { QueryRunner } from 'typeorm';
 import { Init1790553600000 } from './1790553600000-Init';
+import { DeletedUsers1790640000000 } from './1790640000000-DeletedUsers';
 import { NOTIFICATION_MIGRATIONS } from '.';
 
 function recordingRunner(): { runner: QueryRunner; sql: string[] } {
@@ -59,5 +60,20 @@ describe('fiapx_notification migrations', () => {
     await new Init1790553600000().down(runner);
 
     expect(sql).toEqual(['DROP TABLE notifications']);
+  });
+
+  it('DeletedUsers creates deleted_users and the created_at index (and drops them)', async () => {
+    const { runner, sql } = recordingRunner();
+    const migration = new DeletedUsers1790640000000();
+
+    await migration.up(runner);
+    await migration.down(runner);
+
+    expect(sql).toEqual([
+      'CREATE TABLE deleted_users ( user_id uuid PRIMARY KEY, deleted_at timestamptz NOT NULL DEFAULT now() )',
+      'CREATE INDEX ix_notifications_created ON notifications (created_at)',
+      'DROP INDEX IF EXISTS ix_notifications_created',
+      'DROP TABLE IF EXISTS deleted_users',
+    ]);
   });
 });

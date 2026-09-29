@@ -47,6 +47,16 @@ export const emailConfigShape = {
     .default(DEFAULT_PUBLIC_BASE_URL),
   /** LGPD: notifications older than this are anonymized by the daily job. */
   NOTIFICATION_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
+  /**
+   * E-mails per user in 24 h (any type). Sign-up addresses are not verified: this bounds what
+   * one account can send to someone else's inbox from our domain.
+   */
+  NOTIFICATION_DAILY_LIMIT_PER_USER: z.coerce.number().int().min(1).default(10),
+  /**
+   * E-mails in 24 h for everyone, below the provider quota (Resend free: 100/day): the failure
+   * e-mails of real users keep going out even if someone tries to burn the quota.
+   */
+  NOTIFICATION_DAILY_LIMIT: z.coerce.number().int().min(1).default(80),
 };
 
 export const notificationConfigSchema = z

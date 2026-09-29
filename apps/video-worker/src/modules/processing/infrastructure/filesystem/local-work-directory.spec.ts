@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { LocalWorkDirectory } from './local-work-directory';
 
@@ -42,16 +42,17 @@ describe('LocalWorkDirectory', () => {
     await expect(new LocalWorkDirectory(join(base, 'file', 'work')).ensureRoot()).rejects.toThrow();
   });
 
-  it('prepare creates <root>/<videoId>/frames and names the source after the raw extension', async () => {
+  it('prepare creates <root>/<videoId>/<runId>/frames and names the source after the raw extension', async () => {
     const workDirectory = new LocalWorkDirectory(root);
 
     const workspace = await workDirectory.prepare(VIDEO_ID, '.MP4');
 
+    expect(dirname(workspace.dir)).toBe(join(root, VIDEO_ID));
     expect(workspace).toEqual({
       videoId: VIDEO_ID,
-      dir: join(root, VIDEO_ID),
-      sourcePath: join(root, VIDEO_ID, 'source.mp4'),
-      framesDir: join(root, VIDEO_ID, 'frames'),
+      dir: workspace.dir,
+      sourcePath: join(workspace.dir, 'source.mp4'),
+      framesDir: join(workspace.dir, 'frames'),
     });
     expect(existsSync(workspace.framesDir)).toBe(true);
   });
@@ -61,17 +62,24 @@ describe('LocalWorkDirectory', () => {
     ['weird extension', '.mp4;rm -rf'],
   ])('prepare falls back to "source" (%s)', async (_case, extension) => {
     const workspace = await new LocalWorkDirectory(root).prepare(VIDEO_ID, extension);
-    expect(workspace.sourcePath).toBe(join(root, VIDEO_ID, 'source'));
+    expect(workspace.sourcePath).toBe(join(workspace.dir, 'source'));
   });
 
-  it('prepare removes leftovers of a previous attempt of the same video', async () => {
+  it("two runs of the same video never share (or delete) each other's files", async () => {
     const workDirectory = new LocalWorkDirectory(root);
     const first = await workDirectory.prepare(VIDEO_ID, 'mp4');
-    writeFileSync(join(first.framesDir, 'frame_0001.png'), 'old');
+    writeFileSync(join(first.framesDir, 'frame_0001.png'), 'first run');
 
     const second = await workDirectory.prepare(VIDEO_ID, 'mp4');
 
+    expect(second.dir).not.toBe(first.dir);
     expect(await workDirectory.listFrames(second)).toEqual([]);
+    expect(await workDirectory.listFrames(first)).toHaveLength(1);
+
+    await workDirectory.remove(second);
+    expect(existsSync(first.framesDir)).toBe(true); // the video folder stays while in use
+    await workDirectory.remove(first);
+    expect(existsSync(join(root, VIDEO_ID))).toBe(false);
   });
 
   it('prepare refuses a video id that is not a UUID (no path traversal)', async () => {
@@ -130,6 +138,21 @@ describe('LocalWorkDirectory', () => {
     await workDirectory.remove(workspace);
 
     expect(existsSync(workspace.dir)).toBe(false);
+    expect(existsSync(join(root, VIDEO_ID))).toBe(false);
+  });
+
+  it('remove propagates unexpected errors on the video folder', async () => {
+    const workDirectory = new LocalWorkDirectory(root);
+    // A "run" whose parent is a file: rmdir fails with ENOTDIR (not an expected race).
+    writeFileSync(join(base, 'file'), 'x');
+    await expect(
+      workDirectory.remove({
+        videoId: VIDEO_ID,
+        dir: join(base, 'file', 'run'),
+        sourcePath: '',
+        framesDir: '',
+      }),
+    ).rejects.toThrow(/ENOTDIR/);
   });
 
   describe('sweepStale', () => {
@@ -141,7 +164,7 @@ describe('LocalWorkDirectory', () => {
       const old = await workDirectory.prepare(VIDEO_ID, 'mp4');
       const fresh = await workDirectory.prepare(OTHER_ID, 'mp4');
       const oldTime = new Date(now - 2 * HOUR);
-      utimesSync(old.dir, oldTime, oldTime);
+      utimesSync(join(root, VIDEO_ID), oldTime, oldTime);
       mkdirSync(join(root, 'lost+found'));
       utimesSync(join(root, 'lost+found'), oldTime, oldTime);
 
@@ -151,6 +174,14 @@ describe('LocalWorkDirectory', () => {
       expect(existsSync(old.dir)).toBe(false);
       expect(existsSync(fresh.dir)).toBe(true);
       expect(existsSync(join(root, 'lost+found'))).toBe(true);
+    });
+
+    it('with age 0 (production: WORK_DIR is private) removes every job folder at boot', async () => {
+      const workDirectory = new LocalWorkDirectory(root);
+      await workDirectory.prepare(VIDEO_ID, 'mp4');
+      await workDirectory.prepare(OTHER_ID, 'mp4');
+
+      expect((await workDirectory.sweepStale(0)).sort()).toEqual([VIDEO_ID, OTHER_ID].sort());
     });
 
     it('is a no-op when the root does not exist yet', async () => {

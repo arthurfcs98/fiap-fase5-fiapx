@@ -1,7 +1,7 @@
 # Garage (object storage S3) — dev local e CI
 
 O [Garage](https://garagehq.deuxfleurs.fr/) substitui o MinIO (repositório arquivado) como
-storage S3-compatível do FIAP X. Aqui ele roda como **nó único**.
+storage S3-compatível do FIAP Frames. Aqui ele roda como **nó único**.
 
 | Arquivo | Para quê |
 |---|---|
@@ -14,7 +14,7 @@ Todos vêm do `.env` gerado por `scripts/dev-secrets.sh` (nunca commitado):
 
 - `GARAGE_RPC_SECRET`: 32 bytes em hex, exigido pelo Garage;
 - `GARAGE_ADMIN_TOKEN`: token Bearer da Admin API (só o `garage-init` usa);
-- `GARAGE_METRICS_TOKEN`: token do `/metrics` (Prometheus, na E6);
+- `GARAGE_METRICS_TOKEN`: token do `/metrics` (no K8s, o Prometheus coleta com ele);
 - `S3_ACCESS_KEY_ID` (`GK` + 24 hex) e `S3_SECRET_ACCESS_KEY` (64 hex): a chave S3 local.
   O `init.mjs` **importa** essa chave no Garage. Como as credenciais ficam no `.env`, elas
   continuam válidas depois de um `make down-v` (o init reimporta a mesma chave). Se a chave
@@ -46,8 +46,24 @@ AWS_ACCESS_KEY_ID=$S3_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY=$S3_SECRET_ACCESS_KEY 
   aws --endpoint-url http://localhost:3900 --region garage s3 ls
 ```
 
-## Próximos passos (E3)
+## Em produção (K3s): o que foi construído
 
-A lógica migra para `libs/storage` (one-shot `storage-init` na imagem do `video-api`): uma
-chave por serviço (`svc-api`, `svc-worker`) com permissão por bucket, quotas (2 GiB raw,
-6 GiB zips) e lifecycle de 7 dias.
+O plano da etapa E3 era mover esta lógica para um one-shot `storage-init` em `libs/storage`, com
+quotas de 2 GiB (raw) e 6 GiB (zips) e lifecycle de 7 dias no bucket. Não foi assim. O que existe:
+
+- **Job `garage-init`** do K8s ([`infra/k8s/base/data/garage/garage-init.mjs`](../k8s/base/data/garage/garage-init.mjs),
+  fase `setup` de cada deploy, idempotente): layout do nó, **uma chave por serviço** com
+  permissão por bucket (`svc-api`: leitura e escrita nos dois buckets, porque a retenção e a
+  eliminação de conta apagam objetos; `svc-worker`: só leitura no `fiapx-raw`, leitura e escrita
+  no `fiapx-zips`) e **quotas de 1 GiB (`fiapx-raw`) e 2,5 GiB (`fiapx-zips`)**, que cabem no
+  disco reservado aos volumes na VM. As chaves são geradas pelo
+  `infra/k8s/scripts/bootstrap-secrets.sh`.
+- **Sem lifecycle no bucket**: a retenção é feita pelo `video-api` (vídeo original apagado quando
+  o processamento termina, zip apagado depois de `ZIP_RETENTION_DAYS`, varredura de hora em hora
+  de sobras e de uploads multipart interrompidos). Detalhes: `docs/lgpd.md`, seção 3.
+- Quota estourada: no upload, `503 X0003` com `Retry-After`; no zip do worker, o vídeo termina
+  `FAILED P0007` (o alerta `FiapxZipStorageHigh` avisa a partir de 2 GiB).
+- O compose (dev e CI) continua com o `init.mjs` desta pasta: uma chave só (`fiapx-local`), sem
+  quotas.
+- `garage.toml` tem uma cópia em `infra/k8s/base/data/garage/`; o `infra/k8s/scripts/validate.sh`
+  falha se as duas divergirem.

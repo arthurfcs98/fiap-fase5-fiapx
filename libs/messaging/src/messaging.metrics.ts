@@ -12,7 +12,11 @@ export const MESSAGES_CONSUMED_TOTAL = 'fiapx_messages_consumed_total';
  * - `permanent_failure`: `NonRetryableError` tratado como resultado de negócio, ack;
  * - `invalid`: envelope inválido, `nack(requeue=false)` → DLX;
  * - `requeued`: a cópia de retry não foi confirmada pelo broker, `reject(requeue=true)`
- *   (conta no `x-delivery-limit`).
+ *   (conta no `x-delivery-limit`);
+ * - `deferred`: dependência fora (Postgres, storage, SMTP): `nack(requeue=true)`, que não conta
+ *   no `x-delivery-limit`, e o consumo pausa com backoff (sem gastar retry);
+ * - `aborted`: o canal que entregou a mensagem fechou durante o processamento; nada é
+ *   confirmado nem publicado e o broker reentrega.
  */
 export const CONSUME_RESULTS = [
   'success',
@@ -21,6 +25,8 @@ export const CONSUME_RESULTS = [
   'permanent_failure',
   'invalid',
   'requeued',
+  'deferred',
+  'aborted',
 ] as const;
 
 export type ConsumeResult = (typeof CONSUME_RESULTS)[number];

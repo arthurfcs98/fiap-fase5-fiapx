@@ -20,8 +20,10 @@ import { ArchiverFrameArchiver } from '../src/modules/processing/infrastructure/
 import {
   describeWithFfmpeg,
   generateAudioOnly,
+  generateStreamedMkv,
   generateTestVideo,
   PNG_SIGNATURE,
+  pngSize,
   writeCorruptMp4,
 } from './support/media';
 import { readStoredEntry, readZipEntries } from './support/zip-reader';
@@ -46,9 +48,15 @@ describeWithFfmpeg('video processing pipeline with the real ffmpeg', () => {
         size: '640x480',
         rate: 25,
       }),
+      generateTestVideo(join(videos, 'sample-2s-4k.mp4'), {
+        durationS: 2,
+        size: '3840x2160',
+        rate: 2,
+      }),
       generateAudioOnly(join(videos, 'audio-only.mp4'), 2),
       writeCorruptMp4(join(videos, 'corrupt.mp4')),
     ]);
+    generateStreamedMkv(join(videos, 'no-duration-30s.mkv'), 30);
   });
 
   afterAll(async () => {
@@ -73,7 +81,9 @@ describeWithFfmpeg('video processing pipeline with the real ffmpeg', () => {
         ffmpegTimeoutMs: 60_000,
         ffprobeTimeoutMs: 30_000,
         maxVideoDurationS: 600,
-        staleWorkDirMs: 3_600_000,
+        maxFramesBytes: 1536 * 1024 * 1024,
+        staleWorkDirMs: 0,
+        shutdownTimeoutMs: 120_000,
         ...settings,
       },
     );
@@ -175,6 +185,72 @@ describeWithFfmpeg('video processing pipeline with the real ffmpeg', () => {
     const error = await rejection(useCase.execute(command(video)));
 
     expect((error as NonRetryableError).appError?.code).toBe('P0003');
+  });
+
+  it('container WITHOUT a duration cannot bypass MAX_VIDEO_DURATION_S: the frame cap → P0003', async () => {
+    const { storage, publisher, useCase, workRoot } = setup({ maxVideoDurationS: 10 });
+    const video = await upload(storage, 'no-duration-30s.mkv');
+
+    const error = await rejection(useCase.execute(command(video)));
+
+    expect((error as NonRetryableError).appError?.code).toBe('P0003');
+    // ffmpeg stopped at 11 frames (10 s + 1 to detect the overflow), not at 30.
+    expect((error as NonRetryableError).appError.metadata).toEqual({
+      durationS: 11,
+      maxDurationS: 10,
+    });
+    expect(storage.contentOf(video.zipBucket, video.zipKey)).toBeUndefined();
+    expect(publisher.ofType('video.processing.completed')).toEqual([]);
+    expect(await readdir(workRoot)).toEqual([]);
+  });
+
+  it('frames over MAX_FRAMES_MB: ffmpeg is stopped and the video fails with P0006 (no retry)', async () => {
+    // The real disk is not filled here: a tiny budget stands in for the 2 GiB emptyDir.
+    const { storage, publisher, useCase, workRoot } = setup({ maxFramesBytes: 64 * 1024 });
+    const video = await upload(storage, 'sample-10s-vga.mp4');
+
+    const error = await rejection(useCase.execute(command(video)));
+
+    expect((error as NonRetryableError).appError?.code).toBe('P0006');
+    expect(storage.contentOf(video.zipBucket, video.zipKey)).toBeUndefined();
+    expect(publisher.ofType('video.processing.completed')).toEqual([]);
+    expect(await readdir(workRoot)).toEqual([]);
+  });
+
+  it('4K video: frames scaled down to 1920 px on the longest side', async () => {
+    const { storage, useCase } = setup();
+    const video = await upload(storage, 'sample-2s-4k.mp4');
+
+    const outcome = await useCase.execute(command(video));
+
+    expect(outcome.frameCount).toBe(2);
+    const zip = storage.contentOf(video.zipBucket, video.zipKey) as Buffer;
+    const [first] = readZipEntries(zip);
+    expect(pngSize(readStoredEntry(zip, first as never))).toEqual({ width: 1920, height: 1080 });
+  });
+
+  it('delivery abandoned mid-ffmpeg: ffmpeg is killed, nothing is published, the run folder is removed', async () => {
+    const { storage, publisher, runner, useCase, workRoot } = setup();
+    const video = await upload(storage, 'sample-10s-vga.mp4');
+    const controller = new AbortController();
+    const toolkit = new FfmpegVideoToolkit(runner);
+    const extract = jest.spyOn(FfmpegVideoToolkit.prototype, 'extractFrames');
+    // The channel closes as ffmpeg starts: the spawned process gets the aborted signal.
+    extract.mockImplementationOnce((...args) => {
+      controller.abort();
+      extract.mockRestore();
+      return toolkit.extractFrames(...args);
+    });
+
+    const error = await rejection(
+      useCase.execute({ ...command(video), signal: controller.signal }),
+    );
+
+    expect(error).toBeInstanceOf(RetryableError);
+    expect(publisher.ofType('video.processing.completed')).toEqual([]);
+    expect(storage.contentOf(video.zipBucket, video.zipKey)).toBeUndefined();
+    expect(runner.runningCount).toBe(0);
+    expect(await readdir(workRoot)).toEqual([]);
   });
 
   it('ffmpeg over FFMPEG_TIMEOUT_MS is killed: transient on attempt 1, P0004 afterwards', async () => {

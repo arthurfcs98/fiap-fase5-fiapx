@@ -1,4 +1,4 @@
-import { RetryableError } from '@fiapx/common';
+import { DependencyUnavailableError, RetryableError } from '@fiapx/common';
 import type { CreateEmailOptions, CreateEmailRequestOptions, CreateEmailResponse } from 'resend';
 import { EmailRejectedError } from '../../domain/email-rejected.error';
 import { describeFailure, safeErrorText } from '../../domain/personal-data';
@@ -34,7 +34,10 @@ export interface ResendEmailSenderOptions {
  * Production e-mail adapter (Resend). The SDK never throws: it returns `{ data, error }`. The
  * Fase 4 adapter logged `error` and returned, so the message was acked and the e-mail lost; this
  * one inspects `error` and throws the classified failure:
- * - 429, 5xx, 408, network error, `concurrent_idempotent_requests` or timeout → `RetryableError`;
+ * - Resend down or throttling us (network error, timeout, 5xx, 408, 429) →
+ *   `DependencyUnavailableError`: the consumer pauses instead of spending retries (a spent daily
+ *   quota must not turn failure e-mails into FAILED rows);
+ * - `concurrent_idempotent_requests` → `RetryableError` (this e-mail only);
  * - any other 4xx (e.g. `validation_error`, `invalid_from_address`) → `EmailRejectedError`.
  *
  * `Idempotency-Key` = notification id: a retry after a timeout (the first request may still
@@ -65,7 +68,10 @@ export class ResendEmailSender implements EmailSender {
           { idempotencyKey: message.idempotencyKey },
         ),
         timeoutMs,
-        () => new RetryableError(`Resend did not answer within ${timeoutMs} ms`),
+        () =>
+          new DependencyUnavailableError('resend', {
+            detail: `no answer within ${timeoutMs} ms`,
+          }),
       );
     } catch (error) {
       if (error instanceof RetryableError) throw error;
@@ -88,10 +94,19 @@ export function isTransientResendError(
   return error.name === 'concurrent_idempotent_requests';
 }
 
+/** Resend itself is unavailable or throttling (not a problem of this e-mail). */
+export function isResendOutage(error: Pick<ResendErrorLike, 'statusCode'>): boolean {
+  const { statusCode } = error;
+  return statusCode === null || statusCode === 408 || statusCode === 429 || statusCode >= 500;
+}
+
 /** Classified exception for a Resend `error` (reason redacted: it may quote the address). */
 export function resendFailure(error: ResendErrorLike): RetryableError | EmailRejectedError {
   const status = error.statusCode === null ? 'no response' : String(error.statusCode);
   const reason = `${error.name} (${status}): ${error.message}`;
+  if (isResendOutage(error)) {
+    return new DependencyUnavailableError('resend', { detail: safeErrorText(reason) });
+  }
   return isTransientResendError(error)
     ? new RetryableError(safeErrorText(`Resend ${reason}`))
     : new EmailRejectedError('resend', reason);

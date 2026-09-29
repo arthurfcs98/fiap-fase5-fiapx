@@ -1,4 +1,4 @@
-# Grafana: dashboards "FIAP X — Pipeline de vídeos" e "FIAP X — SLOs", Explore do Loki e a
+# Grafana: dashboards "FIAP Frames — Pipeline de vídeos" e "FIAP Frames — SLOs", Explore do Loki e a
 # lista de alertas do Prometheus. Tudo provisionado como código (datasources, dashboards).
 #
 # SEM Ingress e SEM volume, de propósito:

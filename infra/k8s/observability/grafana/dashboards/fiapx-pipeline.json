@@ -1,6 +1,6 @@
 {
   "uid": "fiapx-pipeline",
-  "title": "FIAP X — Pipeline de vídeos",
+  "title": "FIAP Frames — Pipeline de vídeos",
   "description": "Upload -> fila -> worker -> zip -> notificação: vazão, fila, escala, duração, falhas e recursos.",
   "tags": [
     "fiapx"
@@ -1322,7 +1322,7 @@
       "gridPos": {
         "x": 0,
         "y": 39,
-        "w": 12,
+        "w": 8,
         "h": 8
       },
       "targets": [
@@ -1393,9 +1393,9 @@
         "uid": "prometheus"
       },
       "gridPos": {
-        "x": 12,
+        "x": 8,
         "y": 39,
-        "w": 12,
+        "w": 8,
         "h": 8
       },
       "targets": [
@@ -1435,6 +1435,85 @@
               {
                 "color": "green",
                 "value": null
+              }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Zips guardados no fiapx-zips (quota 2,5 GiB)",
+      "description": "fiapx_zip_storage_bytes: bytes dos zips ainda não expirados. Perto da quota, vídeos novos falham com P0007 (alerta FiapxZipStorageHigh acima de 2 GiB).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 39,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "max(fiapx_zip_storage_bytes)",
+          "legendFormat": "zips guardados",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisSoftMin": 0,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 2147483648
               }
             ]
           },

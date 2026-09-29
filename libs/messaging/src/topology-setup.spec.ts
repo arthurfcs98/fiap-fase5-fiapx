@@ -206,4 +206,34 @@ describe('TopologyInitializer', () => {
 
     expect(connection.createChannel).toHaveBeenCalledTimes(1);
   });
+
+  describe('redeclare', () => {
+    it('declara a topologia na conexão atual e fecha o canal efêmero', async () => {
+      const { initializer, manager } = setup();
+      const connection = manager.simulateConnect();
+
+      await initializer.redeclare();
+
+      const channel = connection.channels[0];
+      expect(channel?.assertQueue).toHaveBeenCalledTimes(topology.queues.length);
+      expect(channel?.close).toHaveBeenCalled();
+    });
+
+    it('sem conexão rejeita; sem topologia não faz nada', async () => {
+      await expect(setup().initializer.redeclare()).rejects.toThrow('desconectado');
+      await expect(setup(false).initializer.redeclare()).resolves.toBeUndefined();
+    });
+
+    it('falha na declaração rejeita, mas fecha o canal', async () => {
+      const { initializer, manager } = setup();
+      const connection = manager.simulateConnect();
+      const broken = new FakeChannel();
+      broken.assertQueue.mockRejectedValue(new Error('PRECONDITION_FAILED'));
+      broken.close.mockRejectedValue(new Error('já fechado'));
+      connection.createChannel.mockResolvedValueOnce(broken);
+
+      await expect(initializer.redeclare()).rejects.toThrow('PRECONDITION_FAILED');
+      expect(broken.close).toHaveBeenCalled();
+    });
+  });
 });

@@ -1,5 +1,12 @@
-# Setup idempotente do RabbitMQ (script em base/data/rabbitmq/rabbitmq-init.mjs, ConfigMap
-# fiapx-rabbitmq-init): usuário do KEDA e limites por fila. A topologia é dos serviços.
+# Setup idempotente do RabbitMQ, em dois passos:
+#   1. initContainer "topology": a topologia do CÓDIGO (libs/messaging/src/topology.ts), pelo
+#      entry setup-topology.js da imagem do video-api (o deploy.sh troca pelo digest da release),
+#      com o administrador "fiapx". Os usuários por serviço só REdeclaram: criar fila com
+#      dead-letter exige read na fila e write no fiapx.dlx, que eles não têm; e a topic permission
+#      do passo 2 exige o fiapx.events existindo;
+#   2. container "rabbitmq-init" (script em base/data/rabbitmq/rabbitmq-init.mjs, ConfigMap
+#      fiapx-rabbitmq-init): usuário do KEDA, um usuário por serviço (permissões mínimas) e
+#      limites por fila (inclusive TTL das DLQs).
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -28,6 +35,35 @@ spec:
         runAsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        - name: topology
+          image: ghcr.io/arthurfcs98/fiapx-video-api
+          imagePullPolicy: IfNotPresent
+          # args (e não command): mantém o ENTRYPOINT tini da imagem (sinais e exit code).
+          args: ["node", "dist/setup-topology.js"]
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: LOG_LEVEL
+              value: info
+            - name: RABBITMQ_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: fiapx-rabbitmq, key: RABBITMQ_DEFAULT_PASS }
+            # A senha é hex (openssl rand -hex): segura dentro da URL.
+            - name: RABBITMQ_URL
+              value: amqp://fiapx:$(RABBITMQ_ADMIN_PASSWORD)@rabbitmq:5672
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 250m
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
       containers:
         - name: rabbitmq-init
           image: node:22.23-alpine3.24@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
@@ -46,6 +82,16 @@ spec:
             - name: KEDA_PASSWORD
               valueFrom:
                 secretKeyRef: { name: fiapx-keda-rabbitmq, key: KEDA_PASSWORD }
+            # Senhas dos usuários por serviço (as mesmas das RABBITMQ_URL de cada app).
+            - name: API_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: fiapx-rabbitmq, key: API_PASSWORD }
+            - name: WORKER_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: fiapx-rabbitmq, key: WORKER_PASSWORD }
+            - name: NOTIFICATION_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: fiapx-rabbitmq, key: NOTIFICATION_PASSWORD }
             - name: RABBITMQ_MAX_QUEUE_BYTES
               value: "67108864"            # 64 MiB por fila (~20 filas; o PVC tem 1 GiB)
           volumeMounts:

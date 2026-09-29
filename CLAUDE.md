@@ -1,4 +1,4 @@
-# FIAP X: instruções do projeto
+# FIAP Frames: instruções do projeto
 
 Hackathon FIAP SOAT, Fase 5 (formação da equipe **pendente de confirmação**; hoje só o Arthur
 trabalha no repositório). Processamento de vídeos em
@@ -72,7 +72,9 @@ make test-bdd | load [VUS=20 DURATION=30s] | demo-happy | demo-sad | fixtures
 - **Erros:** `AppError`/`AppErrorException` de `@fiapx/common`, com prefixos
   **A** (Auth), **V** (Video), **P** (Processamento, gravado em `videos.error_code`) e
   **X** (Comum). Ex.: `throw VideoErrors.NOT_FOUND(id)` → `404 { error: { message: "VIDEO_NOT_FOUND", code: "V0001", ... } }`.
-  Falhas de fila: `RetryableError` (transitória) e `NonRetryableError` (permanente).
+  Falhas de fila: `RetryableError` (transitória), `DependencyUnavailableError` (dependência fora:
+  Postgres, storage, SMTP) e `NonRetryableError` (permanente). Na API, erro de conexão com uma
+  dependência vira `503 X0003` com `Retry-After` (nunca 500, e nunca 401 na validação do JWT).
 - **Config:** um schema zod por app (`config/*.config.ts`) exposto por token via
   `TypedConfigModule`. Nunca ler `process.env` fora do loader.
 - **Correlation id:** HTTP usa o header `x-correlation-id` (até 100 caracteres, o tamanho da
@@ -85,8 +87,16 @@ make test-bdd | load [VUS=20 DURATION=30s] | demo-happy | demo-sad | fixtures
 - **Mensageria:** consumidor = provider na camada `interfaces` que chama
   `MessageConsumers.start({ queue: QUEUES.x, schema, handle, onPermanentFailure? })` no
   `onApplicationBootstrap`. Falha transitória → lançar `RetryableError` (erro desconhecido também
-  vira retry); permanente → `NonRetryableError` (catálogo `ProcessingErrors`). Publicar só por
+  vira retry); dependência fora → `DependencyUnavailableError` (ou deixar o erro de conexão
+  subir): o consumo pausa sem gastar retry; permanente → `NonRetryableError` (catálogo
+  `ProcessingErrors`). Repassar `ctx.signal` para operações longas (ffmpeg, S3): ele aborta quando
+  o canal da mensagem fecha, e depois disso nada é confirmado nem publicado. Publicar só por
   `EVENT_PUBLISHER` com `createEvent(type, payload, correlationId)`.
+- **Fila ou binding novo:** além de `libs/messaging/src/topology.ts` e do contrato, atualizar as
+  regex de permissão dos usuários por serviço em `infra/k8s/base/data/rabbitmq/rabbitmq-init.mjs`
+  (o `libs/messaging/test/rabbitmq-permissions.int-spec.ts` falha se esquecer). No K8s a
+  topologia é criada pelo Job `rabbitmq-init` (entry `setup-topology.js` do video-api, como
+  admin); os serviços só a redeclaram.
 - **Integração:** `apps/<app>/test/*.int-spec.ts` ou `libs/<lib>/test/*.int-spec.ts` entram
   sozinhos no `jest.int.config.js`; imagens dos containers vêm do `compose.yaml`.
 - **Pacotes só ESM** (ex.: `file-type`): o Jest os converte para CommonJS pela lista
@@ -102,7 +112,10 @@ make test-bdd | load [VUS=20 DURATION=30s] | demo-happy | demo-sad | fixtures
   ganha cenário BDD em `tests/bdd/features` (pt-BR); o arquivo `99-*` confere que nenhum dado
   pessoal aparece nos logs e precisa continuar sendo o último.
 - **Throttling:** `@ThrottleBy('register'|'login'|'upload'|'accountDeletion')` na rota; limites
-  em `THROTTLE_*_LIMIT` (padrões do contrato; o compose local folga cadastro e upload).
+  em `THROTTLE_*_LIMIT` (padrões do contrato; o compose local folga cadastro, login por IP e
+  upload). O login tem dois limites: por IP + e-mail e por IP (`THROTTLE_LOGIN_IP_LIMIT`); IPv6
+  conta por prefixo `/64`. Capacidade do upload: `MAX_CONCURRENT_UPLOADS` por réplica (503) e
+  `MAX_PENDING_VIDEOS_PER_USER` (429 `V0007`).
 - **Logs de acesso:** o pino só registra método, caminho sem query e status (a query do download
   tem a assinatura; os headers têm o nome do arquivo). Nunca logar e-mail, nome ou `originalName`.
 - **Docs no mesmo PR:** mudou comportamento, contrato, env ou comando → atualizar README,

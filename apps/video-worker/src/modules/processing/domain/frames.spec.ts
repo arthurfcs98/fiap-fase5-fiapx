@@ -1,4 +1,11 @@
-import { FRAME_FILE_PATTERN, frameIndex, isFrameFileName, sortFrames } from './frames';
+import {
+  FRAME_FILE_PATTERN,
+  FRAME_OUTPUT_LIMITS,
+  frameIndex,
+  isFrameFileName,
+  maxFramesFor,
+  sortFrames,
+} from './frames';
 
 const frame = (name: string) => ({ name, path: `/work/v/frames/${name}` });
 
@@ -33,5 +40,12 @@ describe('frames', () => {
       'frame_9999.png',
       'frame_10000.png',
     ]);
+  });
+
+  it('bounds the output: one frame per second of the longest video, 1920 px at most', () => {
+    expect(maxFramesFor(600)).toBe(600);
+    expect(maxFramesFor(600.4)).toBe(600);
+    expect(maxFramesFor(0.2)).toBe(1);
+    expect(FRAME_OUTPUT_LIMITS.maxDimension).toBe(1920);
   });
 });

@@ -79,7 +79,7 @@ ENV NODE_ENV=production \
     APP_VERSION=${APP_VERSION}
 
 LABEL org.opencontainers.image.title="fiapx-${APP}" \
-      org.opencontainers.image.description="FIAP X: ${APP} (NestJS)" \
+      org.opencontainers.image.description="FIAP Frames: ${APP} (NestJS)" \
       org.opencontainers.image.source="https://github.com/arthurfcs98/fiap-fase5-fiapx" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.version="${APP_VERSION}" \

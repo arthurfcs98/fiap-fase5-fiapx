@@ -127,7 +127,10 @@
                 Processar seus vídeos: extrair os frames, gerar o .zip e mostrar o andamento na sua
                 lista.
               </li>
-              <li>Avisar por e-mail quando um processamento falhar ou terminar.</li>
+              <li>
+                Avisar por e-mail sobre o processamento dos seus vídeos (por padrão, só quando ele
+                falha).
+              </li>
               <li>Manter o serviço seguro e disponível, prevenindo abuso.</li>
             </ul>
             <p>
@@ -190,8 +193,19 @@
                     </td>
                   </tr>
                   <tr>
+                    <td>Mensagens internas que falharam</td>
+                    <td>
+                      Até <strong>7 dias</strong>. Se um processamento ou um aviso falha várias
+                      vezes, a mensagem interna (que pode ter seu nome, seu e-mail e o nome do
+                      arquivo) fica guardada para análise da falha e depois é descartada.
+                    </td>
+                  </tr>
+                  <tr>
                     <td>Registros técnicos (logs)</td>
-                    <td>72 horas.</td>
+                    <td>
+                      72 horas no sistema de logs. Cópias locais no servidor são sobrescritas por
+                      tamanho. Nenhum deles contém seu nome, e-mail ou senha.
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -249,7 +263,10 @@
               <li>
                 <strong>Acesso e portabilidade:</strong> entre na sua conta, abra
                 <strong>Meus dados</strong> e use <strong>Baixar meus dados (JSON)</strong>. O
-                arquivo traz seu cadastro (sem a senha), seus vídeos e o histórico de cada um.
+                arquivo traz seu cadastro (sem a senha), seus vídeos e o histórico de cada um. O
+                registro dos e-mails enviados a você (destinatário, tipo do aviso, situação e data)
+                fica num sistema separado e não entra no arquivo: peça pelo
+                <a class="link" href="#contato">contato</a>.
               </li>
               <li>
                 <strong>Eliminação:</strong> em <strong>Meus dados</strong>, use
@@ -298,16 +315,20 @@
           <section id="contato" aria-labelledby="h-contato">
             <h2 id="h-contato">Contato</h2>
             <p>
-              Dúvidas, pedidos ou reclamações sobre privacidade: abra uma
+              Os seus direitos de acesso, portabilidade e exclusão são exercidos por você mesmo, a
+              qualquer momento e sem precisar pedir a ninguém, em "Meus dados", depois do login:
+              "Baixar meus dados (JSON)" entrega tudo o que guardamos sobre você, e "Excluir minha
+              conta" apaga a conta, os vídeos e os arquivos na hora.
+            </p>
+            <p>
+              Dúvidas, sugestões ou reclamações sobre privacidade podem ser registradas como
               <a
                 class="link"
                 href="https://github.com/arthurfcs98/fiap-fase5-fiapx/issues"
                 rel="noopener"
                 >issue no repositório do projeto</a
-              >
-              (não inclua dados pessoais na issue; responderemos por lá). Os direitos de acesso e de
-              exclusão também podem ser exercidos a qualquer momento em "Meus dados", depois do
-              login.
+              >. O repositório é público: não inclua na issue nenhum dado pessoal (e-mail, nome,
+              nome de arquivo ou identificador de vídeo).
             </p>
           </section>
         </article>

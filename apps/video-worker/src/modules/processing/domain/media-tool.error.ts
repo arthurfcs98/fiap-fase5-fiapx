@@ -8,9 +8,11 @@ export type MediaTool = 'ffprobe' | 'ffmpeg';
  *   interrupted (ffmpeg exit code 255);
  * - `no_space`: the scratch disk filled up (`ENOSPC`);
  * - `unavailable`: the binary could not be started (not installed, no permission);
- * - `failed`: non-zero exit code, i.e. ffmpeg/ffprobe rejected the input.
+ * - `failed`: non-zero exit code, i.e. ffmpeg/ffprobe rejected the input;
+ * - `aborted`: the caller cancelled the run (the AMQP channel of the delivery closed).
  */
-export type MediaToolFailure = 'timeout' | 'killed' | 'no_space' | 'unavailable' | 'failed';
+export type MediaToolFailure =
+  'timeout' | 'killed' | 'no_space' | 'unavailable' | 'failed' | 'aborted';
 
 export class MediaToolError extends Error {
   constructor(

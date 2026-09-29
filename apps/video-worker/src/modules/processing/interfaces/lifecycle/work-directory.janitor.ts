@@ -10,8 +10,9 @@ import { WORK_DIRECTORY } from '../../domain/ports/work-directory.port';
  * - fail fast when the directory cannot be created or written (the worker would only churn
  *   retries otherwise);
  * - remove job directories left behind by a process killed before its `finally` (OOM, SIGKILL
- *   after the grace period). Only entries older than `staleWorkDirMs` are removed, so a volume
- *   shared by several replicas keeps their jobs in progress.
+ *   after the grace period): `WORK_DIR` is private to the replica and no job runs yet, so
+ *   everything older than `staleWorkDirMs` (0 in production: everything) is a leftover. Without
+ *   this, the frames of a killed job would eat the disk of the next one.
  */
 @Injectable()
 export class WorkDirectoryJanitor implements OnModuleInit {

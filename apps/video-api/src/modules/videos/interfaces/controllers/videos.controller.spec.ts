@@ -36,6 +36,7 @@ import { VIDEO_SETTINGS } from '../../application/video.settings';
 import { VIDEO_REPOSITORY } from '../../domain/video.repository';
 import { FileTypeSignatureInspector } from '../../infrastructure/file-signature/file-type-signature.inspector';
 import { HmacDownloadSigner } from '../../infrastructure/signing/hmac-download.signer';
+import { UPLOAD_SLOTS, UploadSlots } from '../http/upload-slots';
 import { DownloadsController } from './downloads.controller';
 import { VideosController } from './videos.controller';
 
@@ -64,9 +65,11 @@ const settings: VideoSettings = {
   publicBaseUrl: 'http://api.test',
   downloadUrlTtlSeconds: 300,
   zipRetentionDays: 7,
+  maxConcurrentUploads: 2,
+  maxPendingVideosPerUser: 3,
 };
 
-async function createApp() {
+async function createApp(slots = new UploadSlots(settings.maxConcurrentUploads)) {
   const uow = new FakeUnitOfWork();
   const storage = new InMemoryObjectStorage();
   const metrics = new RecordingVideoMetrics();
@@ -90,6 +93,7 @@ async function createApp() {
       { provide: VIDEO_METRICS, useValue: metrics },
       { provide: CLOCK, useValue: new FixedClock(new Date()) },
       { provide: VIDEO_SETTINGS, useValue: settings },
+      { provide: UPLOAD_SLOTS, useValue: slots },
       { provide: DOWNLOAD_SIGNER, useValue: new HmacDownloadSigner('s'.repeat(48)) },
       { provide: APP_GUARD, useClass: TestAuthGuard },
       { provide: APP_FILTER, useClass: GlobalExceptionFilter },
@@ -98,7 +102,7 @@ async function createApp() {
   const app = moduleRef.createNestApplication<NestExpressApplication>({ logger: false });
   app.setGlobalPrefix('api');
   await app.init();
-  return { app, uow, storage, metrics };
+  return { app, uow, storage, metrics, slots };
 }
 
 describe('VideosController + DownloadsController (HTTP)', () => {
@@ -126,6 +130,69 @@ describe('VideosController + DownloadsController (HTTP)', () => {
     expect(ctx.storage.size).toBe(1);
     expect(ctx.uow.outbox.ofType('video.uploaded')).toHaveLength(1);
     expect(ctx.metrics.uploadedCount).toBe(1);
+  });
+
+  it('replica streaming its maximum of uploads → 503 X0003 with Retry-After, nothing stored', async () => {
+    const busy = ctx.slots.tryAcquire(OTHER_USER_ID);
+    const other = ctx.slots.tryAcquire(OTHER_USER_ID);
+
+    const res = await http()
+      .post('/api/videos')
+      .attach('video', mp4Bytes(2048), 'demo.mp4')
+      .expect(503);
+
+    expect(res.body.error).toMatchObject({ code: 'X0003', metadata: { retryAfterSeconds: 5 } });
+    expect(res.headers['retry-after']).toBe('5');
+    expect(ctx.storage.size).toBe(0);
+    busy?.();
+    other?.();
+    await http().post('/api/videos').attach('video', mp4Bytes(2048), 'demo.mp4').expect(202);
+    expect(ctx.slots.inUse).toBe(0);
+  });
+
+  it('user with MAX_PENDING_VIDEOS_PER_USER videos in progress → 429 V0007 with Retry-After', async () => {
+    for (let i = 0; i < 3; i += 1) {
+      ctx.uow.videos.add(
+        aVideo({
+          id: `00000000-0000-4000-8000-00000000000${i}`,
+          status: i ? 'QUEUED' : 'PROCESSING',
+        }),
+      );
+    }
+
+    const res = await http()
+      .post('/api/videos')
+      .attach('video', mp4Bytes(2048), 'demo.mp4')
+      .expect(429);
+
+    expect(res.body.error).toMatchObject({
+      code: 'V0007',
+      metadata: { limit: 3, retryAfterSeconds: 15 },
+    });
+    expect(res.headers['retry-after']).toBe('15');
+    expect(ctx.storage.size).toBe(0);
+    // Another user is not affected.
+    await http()
+      .post('/api/videos')
+      .set('x-test-user', OTHER_USER_ID)
+      .attach('video', mp4Bytes(2048), 'demo.mp4')
+      .expect(202);
+  });
+
+  it('uploads still streaming count toward the pending limit; the slot is freed on failure', async () => {
+    ctx.uow.videos.add(aVideo({ status: 'QUEUED' }));
+    const streaming = [ctx.slots.tryAcquire(USER_ID)];
+    await ctx.app.close();
+    ctx = await createApp(new UploadSlots(10));
+    ctx.uow.videos.add(aVideo({ status: 'QUEUED' }));
+    const inFlight = [ctx.slots.tryAcquire(USER_ID), ctx.slots.tryAcquire(USER_ID)];
+
+    await http().post('/api/videos').attach('video', mp4Bytes(2048), 'demo.mp4').expect(429);
+
+    inFlight.forEach((release) => release?.());
+    streaming.forEach((release) => release?.());
+    await http().post('/api/videos').attach('video', pngBytes(), 'demo.mp4').expect(400);
+    expect(ctx.slots.inUse).toBe(0);
   });
 
   it('same Idempotency-Key → same video, body drained, nothing duplicated', async () => {

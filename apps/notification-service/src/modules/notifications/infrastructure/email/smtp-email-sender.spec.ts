@@ -1,4 +1,4 @@
-import { RetryableError } from '@fiapx/common';
+import { DependencyUnavailableError, RetryableError } from '@fiapx/common';
 import { EmailRejectedError } from '../../domain/email-rejected.error';
 import type { EmailMessage } from '../../domain/ports/email-sender.port';
 import type { SmtpMail } from './smtp-email-sender';
@@ -57,8 +57,10 @@ describe('SmtpEmailSender', () => {
       { from: 'x@y.z' },
     );
 
-    await expect(smtp.send(MESSAGE)).rejects.toThrow(
-      new RetryableError('SMTP ECONNECTION: Connection closed'),
+    const error = await smtp.send(MESSAGE).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(DependencyUnavailableError);
+    expect((error as DependencyUnavailableError).reason).toBe(
+      'DEPENDENCY_UNAVAILABLE (smtp): SMTP ECONNECTION: Connection closed',
     );
   });
 });
@@ -90,10 +92,16 @@ describe('smtpFailure', () => {
       'SMTP EAUTH 454: temporary auth failure',
     ],
     [
-      'connection refused → transient',
+      'connection refused → the server is down (outage: the consumer pauses)',
       nodemailerError('connect ECONNREFUSED 127.0.0.1:1025', { code: 'ESOCKET' }),
-      RetryableError,
-      'SMTP ESOCKET: connect ECONNREFUSED 127.0.0.1:1025',
+      DependencyUnavailableError,
+      'DEPENDENCY_UNAVAILABLE (smtp): SMTP ESOCKET: connect ECONNREFUSED 127.0.0.1:1025',
+    ],
+    [
+      'reply 421 (service not available) → outage',
+      nodemailerError('421 4.3.2 Service not available', { code: 'EPROTOCOL', responseCode: 421 }),
+      DependencyUnavailableError,
+      'DEPENDENCY_UNAVAILABLE (smtp): SMTP EPROTOCOL 421: 421 4.3.2 Service not available',
     ],
     [
       'no recipients → permanent',

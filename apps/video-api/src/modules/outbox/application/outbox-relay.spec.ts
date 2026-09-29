@@ -1,11 +1,13 @@
 import { videoCompletedFixture, videoUploadedFixture } from '@fiapx/contracts/fixtures';
 import { PublishError } from '@fiapx/messaging';
 import { RecordingEventPublisher } from '@fiapx/messaging/testing';
+import { FixedClock, NOW } from '../../../../test/support/fakes';
 import type { OutboxRecord, OutboxStore } from '../domain/outbox.ports';
 import {
   backoffMs,
   OUTBOX_BATCH_SIZE,
   OUTBOX_LEASE_MS,
+  OUTBOX_LEASE_SAFETY_MS,
   OutboxRelay,
   toEnvelope,
 } from './outbox-relay';
@@ -41,7 +43,9 @@ describe('OutboxRelay', () => {
     const outbox = store([record(videoUploadedFixture), record(videoCompletedFixture)]);
     const publisher = new RecordingEventPublisher();
 
-    await expect(new OutboxRelay(outbox, publisher).relayBatch()).resolves.toEqual({
+    await expect(
+      new OutboxRelay(outbox, publisher, new FixedClock()).relayBatch(),
+    ).resolves.toEqual({
       claimed: 2,
       published: 2,
       failed: 0,
@@ -56,13 +60,36 @@ describe('OutboxRelay', () => {
     ]);
   });
 
+  it('slow batch: stops publishing before the lease runs out and releases the rest', async () => {
+    const outbox = store([record(videoUploadedFixture), record(videoCompletedFixture)]);
+    const clock = new FixedClock(NOW);
+    const publisher = new RecordingEventPublisher();
+    const publish = publisher.publishEvent.bind(publisher);
+    jest.spyOn(publisher, 'publishEvent').mockImplementation(async (event, options) => {
+      await publish(event, options);
+      // This confirm took almost all the lease.
+      clock.current = new Date(NOW.getTime() + OUTBOX_LEASE_MS - OUTBOX_LEASE_SAFETY_MS + 1);
+    });
+
+    await expect(new OutboxRelay(outbox, publisher, clock).relayBatch()).resolves.toEqual({
+      claimed: 2,
+      published: 1,
+      failed: 0,
+    });
+
+    expect(publisher.events).toEqual([videoUploadedFixture]);
+    expect(outbox.release).toHaveBeenCalledWith([videoCompletedFixture.id]);
+  });
+
   it('broker failure: backoff on the failed row, releases the rest and stops the batch', async () => {
     const outbox = store([record(videoUploadedFixture, 2), record(videoCompletedFixture)]);
     const publisher = new RecordingEventPublisher().failNextWith(
       new PublishError('fiapx.events', 'video.uploaded'),
     );
 
-    await expect(new OutboxRelay(outbox, publisher).relayBatch()).resolves.toEqual({
+    await expect(
+      new OutboxRelay(outbox, publisher, new FixedClock()).relayBatch(),
+    ).resolves.toEqual({
       claimed: 2,
       published: 0,
       failed: 1,
@@ -81,13 +108,13 @@ describe('OutboxRelay', () => {
   it('non-Error failures are recorded too', async () => {
     const outbox = store([record(videoUploadedFixture)]);
     const publisher = { publishEvent: jest.fn().mockRejectedValue('nack') };
-    await new OutboxRelay(outbox, publisher).relayBatch();
+    await new OutboxRelay(outbox, publisher, new FixedClock()).relayBatch();
     expect(outbox.markFailed).toHaveBeenCalledWith(videoUploadedFixture.id, 'nack', 1_000);
   });
 
   it('empty outbox → nothing to do', async () => {
     await expect(
-      new OutboxRelay(store([]), new RecordingEventPublisher()).relayBatch(),
+      new OutboxRelay(store([]), new RecordingEventPublisher(), new FixedClock()).relayBatch(),
     ).resolves.toEqual({
       claimed: 0,
       published: 0,

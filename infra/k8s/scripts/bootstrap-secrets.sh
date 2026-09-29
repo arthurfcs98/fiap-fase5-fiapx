@@ -105,6 +105,11 @@ base POSTGRES_PASSWORD        fiapx-postgres       POSTGRES_PASSWORD        hex2
 base VIDEO_DB_PASSWORD        fiapx-postgres       VIDEO_DB_PASSWORD        hex24
 base NOTIF_DB_PASSWORD        fiapx-postgres       NOTIF_DB_PASSWORD        hex24
 base RABBITMQ_PASSWORD        fiapx-rabbitmq       RABBITMQ_DEFAULT_PASS    hex24
+# Um usuário do RabbitMQ por serviço (criado pelo Job rabbitmq-init com permissões mínimas);
+# o administrador (RABBITMQ_DEFAULT_PASS) fica só para o broker e o Job.
+base RABBITMQ_API_PASSWORD    fiapx-rabbitmq       API_PASSWORD             hex24
+base RABBITMQ_WORKER_PASSWORD fiapx-rabbitmq       WORKER_PASSWORD          hex24
+base RABBITMQ_NOTIF_PASSWORD  fiapx-rabbitmq       NOTIFICATION_PASSWORD    hex24
 base REDIS_PASSWORD           fiapx-redis          REDIS_PASSWORD           hex24
 base GARAGE_RPC_SECRET        fiapx-garage         GARAGE_RPC_SECRET        hex32
 base GARAGE_ADMIN_TOKEN       fiapx-garage         GARAGE_ADMIN_TOKEN       hex24
@@ -126,7 +131,9 @@ compose() {  # $1 nome, $2 formato do printf, $3 valor de base
   # shellcheck disable=SC2059   # o formato é fixo, definido abaixo
   printf "$2" "$secret" > "$VAL/$1"
 }
-compose RABBITMQ_URL 'amqp://fiapx:%s@rabbitmq:5672' RABBITMQ_PASSWORD
+compose RABBITMQ_URL_API    'amqp://fiapx-api:%s@rabbitmq:5672' RABBITMQ_API_PASSWORD
+compose RABBITMQ_URL_WORKER 'amqp://fiapx-worker:%s@rabbitmq:5672' RABBITMQ_WORKER_PASSWORD
+compose RABBITMQ_URL_NOTIF  'amqp://fiapx-notification:%s@rabbitmq:5672' RABBITMQ_NOTIF_PASSWORD
 compose REDIS_URL    'redis://:%s@redis:6379' REDIS_PASSWORD
 # O KEDA roda no namespace keda: precisa do nome completo do Service.
 compose KEDA_HOST    "http://fiapx-keda:%s@rabbitmq.$NS.svc.cluster.local:15672/" KEDA_PASSWORD
@@ -145,7 +152,7 @@ fi
 # Quem usa cada um: comentário ao lado. Nomes referenciados nos manifestos de infra/k8s.
 SECRETS=(
   fiapx-postgres               # StatefulSet postgres (superusuário + senhas dos 2 bancos)
-  fiapx-rabbitmq               # StatefulSet rabbitmq e Job rabbitmq-init
+  fiapx-rabbitmq               # StatefulSet rabbitmq e Job rabbitmq-init (admin + senhas dos serviços)
   fiapx-redis                  # Deployment redis
   fiapx-garage                 # StatefulSet garage, Job garage-init, Prometheus (metrics token)
   fiapx-metrics                # Prometheus (Bearer do /metrics dos 3 apps)
@@ -159,7 +166,8 @@ SECRETS=(
 spec() {  # chaves de cada Secret: <chave no Secret>=<valor>
   case $1 in
     fiapx-postgres) echo POSTGRES_PASSWORD=POSTGRES_PASSWORD VIDEO_DB_PASSWORD=VIDEO_DB_PASSWORD NOTIF_DB_PASSWORD=NOTIF_DB_PASSWORD ;;
-    fiapx-rabbitmq) echo RABBITMQ_DEFAULT_PASS=RABBITMQ_PASSWORD ;;
+    fiapx-rabbitmq) echo RABBITMQ_DEFAULT_PASS=RABBITMQ_PASSWORD API_PASSWORD=RABBITMQ_API_PASSWORD \
+      WORKER_PASSWORD=RABBITMQ_WORKER_PASSWORD NOTIFICATION_PASSWORD=RABBITMQ_NOTIF_PASSWORD ;;
     fiapx-redis) echo REDIS_PASSWORD=REDIS_PASSWORD ;;
     fiapx-garage) echo GARAGE_RPC_SECRET=GARAGE_RPC_SECRET GARAGE_ADMIN_TOKEN=GARAGE_ADMIN_TOKEN \
       GARAGE_METRICS_TOKEN=GARAGE_METRICS_TOKEN API_ACCESS_KEY_ID=API_ACCESS_KEY_ID \
@@ -168,13 +176,13 @@ spec() {  # chaves de cada Secret: <chave no Secret>=<valor>
     fiapx-metrics) echo METRICS_TOKEN=METRICS_TOKEN ;;
     fiapx-keda-rabbitmq) echo KEDA_PASSWORD=KEDA_PASSWORD host=KEDA_HOST ;;
     fiapx-grafana) echo admin-user=GRAFANA_USER admin-password=GRAFANA_PASSWORD ;;
-    fiapx-video-api) echo DB_PASSWORD=VIDEO_DB_PASSWORD RABBITMQ_URL=RABBITMQ_URL REDIS_URL=REDIS_URL \
+    fiapx-video-api) echo DB_PASSWORD=VIDEO_DB_PASSWORD RABBITMQ_URL=RABBITMQ_URL_API REDIS_URL=REDIS_URL \
       S3_ACCESS_KEY_ID=API_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY=API_SECRET_ACCESS_KEY \
       JWT_SECRET=JWT_SECRET DOWNLOAD_URL_SECRET=DOWNLOAD_URL_SECRET METRICS_TOKEN=METRICS_TOKEN ;;
-    fiapx-video-worker) echo RABBITMQ_URL=RABBITMQ_URL S3_ACCESS_KEY_ID=WORKER_ACCESS_KEY_ID \
+    fiapx-video-worker) echo RABBITMQ_URL=RABBITMQ_URL_WORKER S3_ACCESS_KEY_ID=WORKER_ACCESS_KEY_ID \
       S3_SECRET_ACCESS_KEY=WORKER_SECRET_ACCESS_KEY METRICS_TOKEN=METRICS_TOKEN ;;
     fiapx-notification-service)
-      local keys='DB_PASSWORD=NOTIF_DB_PASSWORD RABBITMQ_URL=RABBITMQ_URL METRICS_TOKEN=METRICS_TOKEN'
+      local keys='DB_PASSWORD=NOTIF_DB_PASSWORD RABBITMQ_URL=RABBITMQ_URL_NOTIF METRICS_TOKEN=METRICS_TOKEN'
       if ((HAS_RESEND)); then keys+=' RESEND_API_KEY=RESEND_API_KEY'; fi
       echo "$keys" ;;
     *) die "Secret desconhecido: $1" ;;
@@ -250,6 +258,9 @@ fi
 if ((diverged > 0)); then
   log "ATENÇÃO: $diverged chave(s) divergente(s). Um Secret foi recriado sem os outros; veja a seção"
   log "         \"Segredos\" do infra/k8s/README.md (rotação) antes de continuar."
+  log "         RABBITMQ_URL divergente num cluster de antes dos usuários por serviço (ainda com o"
+  log "         admin \"fiapx\"): remova a chave dos 3 Secrets dos apps e rode de novo (README, seção"
+  log "         \"Usuários do RabbitMQ por serviço\")."
 fi
 if ((YES)); then
   log "pronto: $created criado(s), $patched completado(s)."

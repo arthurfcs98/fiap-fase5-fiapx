@@ -4,7 +4,7 @@
 #
 # Uso (root, na VM):
 #   ./99-uninstall.sh          dry-run: lista o que seria removido (padrão)
-#   ./99-uninstall.sh --yes    remove (APAGA os dados do FIAP X: Postgres, fila, vídeos, métricas)
+#   ./99-uninstall.sh --yes    remove (APAGA os dados do FIAP Frames: Postgres, fila, vídeos, métricas)
 #
 # Ordem (cada passo é idempotente; pode rodar de novo se parar no meio):
 #   1 tira os sites fiapx.caddy e frames.caddy do edge-caddy (reload, sem restart) -> o tráfego para
@@ -60,7 +60,7 @@ docker_rules() { iptables-save | grep -E 'DOCKER|br-' | grep -vE 'KUBE-|CNI-|FLA
 
 [[ $EUID -eq 0 ]] || die "rode como root"
 if (( APPLY )); then
-  echo "Isto APAGA o K3s e todos os dados do FIAP X nesta VM. Os vizinhos não são tocados."
+  echo "Isto APAGA o K3s e todos os dados do FIAP Frames nesta VM. Os vizinhos não são tocados."
   [[ -n $NEIGHBOR_DEPLOY_LOCK ]] || die "NEIGHBOR_DEPLOY_LOCK vazio (use 'nenhum' se os vizinhos não têm deploy automático): $(site_env_hint)"
   read -r -p "Digite 'desinstalar' para confirmar: " ans
   [[ $ans == desinstalar ]] || die "cancelado"
@@ -69,7 +69,7 @@ else
 fi
 
 # ------------------------------------------------------------------ 1. borda
-step "1. Sites do FIAP X no edge-caddy (fiapx.asdevit.com e frames.asdevit.com)"
+step "1. Sites do FIAP Frames no edge-caddy (fiapx.asdevit.com e frames.asdevit.com)"
 "$SCRIPT_DIR/30-ingress.sh" --revert --caddy "${YES[@]}" | sed 's/^/  /'
 
 # ------------------------------------------------------------------ 2. acesso do CD

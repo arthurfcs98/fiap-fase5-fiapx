@@ -1,4 +1,4 @@
-# Observabilidade do FIAP X
+# Observabilidade do FIAP Frames
 
 > Fonte da verdade dos nomes: [`docs/arquitetura/contratos.md`](arquitetura/contratos.md), seções
 > 11 (métricas), 12 (LGPD) e 13 (observabilidade e SLOs). Manifestos:
@@ -10,9 +10,9 @@
 | Pergunta | Resposta |
 |---|---|
 | Quais sinais? | **Métricas** (Prometheus), **logs** (Grafana Alloy -> Loki) e **rastreamento pelo `correlationId`** (o mesmo id do HTTP até o e-mail). |
-| Onde vejo? | **Grafana**, com 2 dashboards provisionados: `FIAP X — Pipeline de vídeos` e `FIAP X — SLOs`. Só por `kubectl port-forward` (nada público). |
+| Onde vejo? | **Grafana**, com 2 dashboards provisionados: `FIAP Frames — Pipeline de vídeos` e `FIAP Frames — SLOs`. Só por `kubectl port-forward` (nada público). |
 | Tem Promtail? | Não. O Promtail foi descontinuado; o sucessor oficial é o **Grafana Alloy**, que faz o mesmo papel (lê os logs dos pods e envia ao Loki). |
-| Tem SLA? | Não há SLA (acordo contratual com multa). Há **SLOs** (metas internas) com **orçamento de erro** numa janela de 7 dias e **8 alertas**. |
+| Tem SLA? | Não há SLA (acordo contratual com multa). Há **5 SLOs** (metas internas) com **orçamento de erro** numa janela de 7 dias, mais a meta "nenhuma requisição perdida", e **10 alertas** (sem Alertmanager: aparecem no Grafana/Prometheus, ninguém é notificado). |
 | Quanto tempo guarda? | Métricas: 3 dias (ou 400 MB). Logs: 72 h (LGPD, contratos.md seção 12). |
 | Custa quanto na VM? | Prometheus + Grafana + Loki + Alloy: 225m de CPU e 544Mi de memória pedidos; 1,5 GiB de disco. Tudo dentro da quota do namespace `fiapx`. |
 
@@ -27,7 +27,7 @@ flowchart LR
     MQ["RabbitMQ<br/>:15692/metrics"]
     S3["Garage<br/>:3903/metrics (token)"]
     subgraph OBS["observabilidade (mesmo namespace)"]
-      P["Prometheus<br/>kubernetes_sd por anotação<br/>regras de SLO + 8 alertas"]
+      P["Prometheus<br/>kubernetes_sd por anotação<br/>regras de SLO + 10 alertas"]
       AL["Grafana Alloy<br/>(DaemonSet)"]
       L["Loki<br/>single binary, 72 h"]
       G["Grafana<br/>2 dashboards"]
@@ -79,11 +79,13 @@ Contrato (seção 11) + o histograma HTTP da seção 13. Nenhum rótulo carrega 
 | `fiapx_http_request_duration_seconds{method,route,status}` | histograma | video-api | SLO de disponibilidade e de latência do upload. `route` é o padrão do Nest (`/api/videos/:id`), `unmatched` para 404/estáticos; health e docs ficam fora |
 | `fiapx_videos_uploaded_total`, `fiapx_videos_completed_total`, `fiapx_videos_failed_total{error_code}` | contador | video-api | vazão e SLO de sucesso do pipeline |
 | `fiapx_outbox_pending` | gauge | video-api | eventos gravados e ainda não publicados |
+| `fiapx_video_turnaround_seconds` | histograma | video-api | SLO de tempo até o resultado: do upload até COMPLETED, **com** a espera na fila (buckets de 10 s a 2 h, exato em 300 s) |
+| `fiapx_zip_storage_bytes` | gauge | video-api | bytes dos zips ainda guardados (lido do banco no scrape); a quota do bucket `fiapx-zips` é 2,5 GiB |
 | `fiapx_video_processing_duration_seconds{result}` | histograma | video-worker | SLO de tempo de processamento (buckets até 600 s, exato em 120 s) |
 | `fiapx_worker_in_flight`, `fiapx_worker_jobs_total{result}` | gauge / contador | video-worker | vídeos em andamento e resultado de cada job (`result` = `completed`, `duplicate`, `failed`, `retry`, os mesmos do histograma de duração) |
-| `fiapx_messages_consumed_total{queue,result}` | contador | os 3 (libs/messaging) | success, retry, dead_letter, permanent_failure, invalid, requeued |
+| `fiapx_messages_consumed_total{queue,result}` | contador | os 3 (libs/messaging) | success, retry, dead_letter, permanent_failure, invalid, requeued, `deferred` (dependência fora: devolvida sem gastar retry, consumo pausado) e `aborted` (canal fechou no meio: o broker reentrega) |
 | `fiapx_notifications_total{type,status}` | contador | notification-service | e-mails por tipo (`VIDEO_FAILED`, `VIDEO_COMPLETED`) e resultado (`SENT`, `FAILED`, `RETRY`, `SKIPPED`); todas as séries nascem em 0 |
-| `rabbitmq_queue_messages{queue}`, `..._ready`, `..._unacked` | gauge | RabbitMQ | fila do worker e DLQs |
+| `rabbitmq_queue_messages{queue}`, `..._ready`, `..._unacked`, `rabbitmq_queue_consumers{queue}` | gauge | RabbitMQ | fila do worker, DLQs e filas sem consumidor |
 | `keda_scaler_metrics_value{scaledObject}` | gauge | KEDA | tamanho da fila que o KEDA enxergou para escalar |
 | `container_cpu_usage_seconds_total`, `container_memory_working_set_bytes` | contador / gauge | kubelet (cAdvisor) | CPU e memória por pod (só `namespace="fiapx"`) |
 
@@ -121,7 +123,7 @@ sum by (app) (count_over_time({namespace="fiapx", level="error"}[5m]))   # erros
 1. **Pegue o id.** Toda resposta da API traz o header `x-correlation-id` (e o corpo de erro traz
    `correlationId`). Você também pode mandar o seu: `curl -H 'x-correlation-id: demo-123' ...`
    (até 100 caracteres, `[A-Za-z0-9._:-]`).
-2. **Abra o Grafana** (seção 7) -> dashboard **FIAP X — Pipeline de vídeos** -> cole o id no campo
+2. **Abra o Grafana** (seção 7) -> dashboard **FIAP Frames — Pipeline de vídeos** -> cole o id no campo
    `correlationId` do topo. O painel "Logs dos serviços" mostra só as linhas daquela requisição.
 3. **Leia na ordem** (mais antigo embaixo, ou inverta a ordem no painel):
    - `video-api`: requisição `POST /api/videos` (202), `videoId` criado, evento `video.uploaded`
@@ -135,8 +137,8 @@ sum by (app) (count_over_time({namespace="fiapx", level="error"}[5m]))   # erros
 4. **Achou o `videoId` mas não o id da requisição?** Use `{namespace="fiapx"} | json | videoId="<id>"`:
    as linhas trazem o `correlationId`, e daí volte ao passo 2.
 5. **Cruze com as métricas**: no mesmo dashboard, "Falhas por error_code" diz se foi erro de
-   entrada (`P0001`-`P0005`) ou do sistema (`P0098` retries esgotados, `P0099` dead-letter); "DLQs"
-   mostra se a mensagem ficou parada.
+   entrada (`P0001`-`P0006`) ou do sistema (`P0007` bucket de zips cheio, `P0098` retries
+   esgotados, `P0099` crash em loop); "DLQs" mostra se a mensagem ficou parada.
 
 ## 5. SLOs (janela de 7 dias)
 
@@ -148,8 +150,9 @@ gravação estão em [`rules/fiapx-slo.rules.yml`](../infra/k8s/observability/pr
 |---|---|---|---|
 | Disponibilidade da API | >= 99,5% sem 5xx | `fiapx:slo_availability:sli_7d` / `..._error_budget_remaining_7d` | `fiapx_http_request_duration_seconds_count` com `status=~"5.."` / total |
 | Aceite do upload | p95 de `POST /api/videos` < 5 s | `fiapx:slo_upload_latency:sli_7d` / `..._error_budget_remaining_7d` | fração em `le="5"` (p95 < 5 s equivale a >= 95% abaixo de 5 s) |
-| Tempo de processamento | p95 < 120 s | `fiapx:slo_processing:sli_7d` / `..._error_budget_remaining_7d` | fração em `le="120"`, só `result="completed"` |
-| Sucesso do pipeline | >= 99% dos vídeos válidos em COMPLETED | `fiapx:slo_pipeline:sli_7d` / `..._error_budget_remaining_7d` | `P0098`/`P0099` são erro do sistema; `P0001`-`P0005` (entrada inválida) ficam fora |
+| Tempo de processamento | p95 < 120 s | `fiapx:slo_processing:sli_7d` / `..._error_budget_remaining_7d` | fração em `le="120"`, só `result="completed"` (o tempo DENTRO do worker) |
+| Tempo até o resultado | p95 < 300 s do upload ao COMPLETED | `fiapx:slo_turnaround:sli_7d` / `..._error_budget_remaining_7d` | fração de `fiapx_video_turnaround_seconds` em `le="300"`: inclui a espera na fila, que o SLO anterior não enxerga (com 2 workers no teto, um pico aparece aqui) |
+| Sucesso do pipeline | >= 99% dos vídeos válidos em COMPLETED | `fiapx:slo_pipeline:sli_7d` / `..._error_budget_remaining_7d` | `P0007`/`P0098`/`P0099` são erro do sistema; `P0001`-`P0006` (entrada inválida) ficam fora. Todas as séries de `error_code` nascem em 0 no boot, então a primeira falha já conta |
 | Nenhuma requisição perdida | DLQs vazias e outbox < 100 por mais de 5 min | (alertas `FiapxDlqNotEmpty` e `FiapxOutboxBacklog`) | `rabbitmq_queue_messages{queue=~".*dlq"}`, `fiapx_outbox_pending` |
 
 Orçamento restante: `1` = intacto, `0` = acabou, negativo = SLO violado na janela.
@@ -174,6 +177,8 @@ com testes unitários em [`tests/fiapx-rules.test.yml`](../infra/k8s/observabili
 | `FiapxDlqNotEmpty` | alguma fila `.dlq` com mensagem | 1 min | critical |
 | `FiapxOutboxBacklog` | `max(fiapx_outbox_pending) >= 100` | 5 min | critical |
 | `FiapxQueueBacklogHigh` | mais de 10 mensagens prontas em `worker.video-uploaded` | 10 min | warning |
+| `FiapxQueueWithoutConsumer` | `worker.video-uploaded`, `api.video-processing`, `api.video-deadletter` ou `notification.events` com 0 consumidores | 5 min | critical |
+| `FiapxZipStorageHigh` | `fiapx_zip_storage_bytes` > 2 GiB (quota do bucket: 2,5 GiB) | 10 min | warning |
 | `FiapxWorkerDown` | nenhuma réplica do video-worker respondendo à coleta | 5 min | critical |
 | `FiapxTargetDown` | qualquer alvo com `up == 0` | 5 min | warning |
 
@@ -204,11 +209,22 @@ cedo demais (14,4x: em ~12 h; 6x: em ~28 h), e não por um pico isolado.
 ### FiapxDlqNotEmpty
 
 1. Qual fila: rótulo `queue` do alerta (`worker.video-uploaded.dlq`, `api.video-processing.dlq`,
-   `notification.events.dlq`).
-2. Motivo: logs com `result="dead_letter"`/`x-last-error`; o `api.video-deadletter` marca o vídeo
-   como `FAILED P0099`.
-3. Depois de corrigir a causa: inspecione e faça o redrive pela UI de management do RabbitMQ
-   (port-forward `svc/rabbitmq 15672`).
+   `api.video-deadletter.dlq`, `notification.events.dlq`).
+2. Motivo: logs `Retries esgotados` (com o `x-last-error` da última falha) ou `Envelope inválido`.
+   Uma dependência fora (Postgres, storage, SMTP) **não** manda nada para a DLQ: o consumo pausa
+   (seção 6.1).
+3. Corrija a causa e trate a fila (UI de management do RabbitMQ: port-forward
+   `svc/rabbitmq 15672`, usuário `fiapx`):
+   - `worker.video-uploaded.dlq`: **purgue** (botão "Purge Messages"). O `api.video-deadletter`
+     recebeu a mesma mensagem e já marcou o vídeo como `FAILED` (`P0098` retries esgotados,
+     `P0099` crash em loop), e o original já foi apagado: reenviar ao worker não recupera nada.
+   - `api.video-processing.dlq`, `api.video-deadletter.dlq`, `notification.events.dlq`:
+     **redrive** pela página da fila -> "Move messages" -> destino = a fila sem o `.dlq`
+     (plugin shovel, [`infra/rabbitmq/README.md`](../infra/rabbitmq/README.md)). A mensagem volta
+     com um ciclo novo de 3 retries (o consumidor zera o `x-retry-count` de quem veio de
+     dead-letter) e é idempotente (inbox `processed_messages`).
+4. As DLQs guardam e-mail, nome e nome de arquivo (LGPD): a operator policy `fiapx-dlq-limits` as
+   limita a 7 dias e 64 MiB (`overflow: reject-publish`). Não deixe mensagem parada lá.
 
 ### FiapxOutboxBacklog
 
@@ -225,6 +241,32 @@ cedo demais (14,4x: em ~12 h; 6x: em ~28 h), e não por um pico isolado.
 3. Na VM o teto é 2 workers (proteção dos vizinhos): uma fila longa num pico é esperada, e o
    tempo de espera aparece aqui, não como perda.
 
+### FiapxQueueWithoutConsumer
+
+1. Qual fila e de quem: `worker.video-uploaded` (video-worker), `api.video-processing` e
+   `api.video-deadletter` (video-api), `notification.events` (notification-service).
+2. Logs do dono: `Consumer cancelado pelo broker` (fila apagada/recriada, `consumer_timeout`)
+   seguido de `re-assinado` é recuperação normal; `Falha ao re-assinar` repetido indica permissão
+   errada ou **fila apagada**: no K8s os usuários por serviço não recriam fila (só o
+   administrador, no Job `rabbitmq-init`): apague o Job e repita o deploy da release atual
+   (seção 8.1 do [`infra/k8s/README.md`](../infra/k8s/README.md)).
+3. `Dependência indisponível: consumo ... pausado` é a pausa proposital (seção 6.1): com o
+   Postgres ou o SMTP fora por mais de 5 min, este alerta dispara junto com o da dependência.
+   Resolva a dependência; o consumo volta sozinho em até 60 s.
+4. Worker e notification-service se reiniciam sozinhos quando ficam 60 s sem consumer (o
+   `/health` responde 503 com `failing: ["messaging-consumers"]`); no video-api só este alerta
+   avisa: `kubectl -n fiapx rollout restart deploy/video-api` se não voltar.
+
+### FiapxZipStorageHigh
+
+1. Acima da quota de 2,5 GiB, cada vídeo novo termina em `FAILED P0007` (conta no SLO do
+   pipeline). O upload continua aceitando (o bucket `fiapx-raw` tem quota própria, 1 GiB).
+2. A retenção (`ZIP_RETENTION_DAYS`, 7 dias, job de hora em hora no video-api) libera espaço
+   sozinha; confira no log `zips vencidos` se o job está rodando.
+3. Se precisar de espaço já: reduza `ZIP_RETENTION_DAYS` no `config.env` do video-api e faça o
+   deploy (o próximo ciclo apaga os zips mais antigos que o novo limite; os usuários recebem
+   `410 V0006`). Aumentar a quota exige disco livre na VM (`infra/k8s/jobs/garage-init.yaml`).
+
 ### FiapxWorkerDown
 
 1. `kubectl -n fiapx get pods -l app.kubernetes.io/name=video-worker` e `describe` (OOMKilled?
@@ -237,6 +279,16 @@ cedo demais (14,4x: em ~12 h; 6x: em ~28 h), e não por um pico isolado.
    (401 = `METRICS_TOKEN` diferente entre app e Prometheus; conexão recusada = pod caído).
 2. `kubelet-cadvisor` fora = RBAC do root não aplicado (`infra/vm/k8s/observability-rbac.yaml`).
    `keda` fora = KEDA não instalado (`infra/vm/35-keda.sh`).
+
+### 6.1 Dependência fora: o consumo pausa (sem perder mensagem)
+
+Quando o Postgres, o storage ou o provedor de e-mail cai, a falha não é da mensagem: o consumidor
+devolve a mensagem para a fila (`nack` com requeue, que no RabbitMQ 4.3 não conta no
+`x-delivery-limit`), **pausa** o consumo (5 s, dobrando até 60 s) e volta sozinho quando a
+dependência responde. Resultado `deferred` em `fiapx_messages_consumed_total`; log
+`Dependência indisponível: consumo de <fila> pausado`. Nenhuma mensagem vai para a DLQ por isso,
+então uma queda longa do banco não vira uma pilha de vídeos `FAILED`. Na API HTTP, a mesma queda
+responde `503 X0003` com `Retry-After` (inclusive na validação do JWT, que nunca vira 401).
 
 ## 7. Como acessar (sem nada público)
 
@@ -260,7 +312,7 @@ No cluster local (k3d, `KEEP=1 infra/k8s/scripts/smoke-k3d.sh`): mesmo comando s
 
 ## 8. Dashboards
 
-**FIAP X — Pipeline de vídeos** (`uid fiapx-pipeline`, página inicial do Grafana)
+**FIAP Frames — Pipeline de vídeos** (`uid fiapx-pipeline`, página inicial do Grafana)
 
 | Linha | Painéis |
 |---|---|
@@ -269,7 +321,7 @@ No cluster local (k3d, `KEEP=1 infra/k8s/scripts/smoke-k3d.sh`): mesmo comando s
 | Recursos | CPU e memória por pod (cAdvisor) |
 | Logs | logs dos 3 serviços filtrados pelo `correlationId` do topo |
 
-**FIAP X — SLOs** (`uid fiapx-slos`): para cada SLO, o SLI de 7 dias (vermelho abaixo da meta),
+**FIAP Frames — SLOs** (`uid fiapx-slos`): para cada SLO, o SLI de 7 dias (vermelho abaixo da meta),
 o orçamento de erro restante e o comportamento recente com a linha da meta; no fim, a tabela de
 alertas disparados agora.
 
@@ -307,9 +359,13 @@ link assinado em nenhum log do stack).
 
 ## 11. Limitações conhecidas
 
-- Janela dos SLOs (7 dias) maior que a retenção (3 dias): ver a nota da seção 5.
-- Sem Alertmanager: o alerta é visto no Grafana/Prometheus, ninguém é notificado.
-- Contadores com rótulo (ex.: `fiapx_videos_failed_total{error_code}`) só ganham série no
-  primeiro evento: num cluster recém-criado alguns painéis ficam "No data" até o primeiro upload.
+- Janela dos SLOs (7 dias) maior que a retenção (3 dias, disco da VM): ver a nota da seção 5. É
+  uma escolha de custo, não um defeito de cálculo.
+- Sem Alertmanager: o alerta é visto no Grafana/Prometheus, ninguém é notificado (não há canal
+  de envio definido e a VM é compartilhada).
+- Os contadores de negócio nascem em 0 no boot (todos os `error_code`, resultados do worker e das
+  notificações), mas `fiapx_messages_consumed_total{queue,result}` só ganha série no primeiro
+  evento de cada par: num cluster recém-criado alguns painéis ficam "No data" até o primeiro
+  upload.
 - Um único Prometheus e um único Loki, sem réplica: na queda deles perde-se só a observação do
   período, nunca dado de negócio.

@@ -491,8 +491,8 @@ Tudo em `infra/vm/k8s/namespace-guard.yaml`:
 
 Quatro detalhes que pegam muita gente:
 
-1. **Pod em terminação conta na quota** até o fim do *grace period*. O worker tem 330 s de
-   grace (termina o vídeo em curso). Num rolling update, o velho (terminando) e o novo
+1. **Pod em terminação conta na quota** até o fim do *grace period*. O worker tem 720 s de
+   grace (termina o vídeo em curso: ffprobe 30 s + ffmpeg 600 s + transferências 60 s). Num rolling update, o velho (terminando) e o novo
    somariam. Por isso o worker e o notification usam `strategy: Recreate`: o Deployment espera
    o velho sair antes de criar o novo, e a fila do RabbitMQ segura as mensagens nesse meio tempo.
 2. **Com `Recreate`, o `progressDeadlineSeconds` precisa ser maior que o grace**; senão o

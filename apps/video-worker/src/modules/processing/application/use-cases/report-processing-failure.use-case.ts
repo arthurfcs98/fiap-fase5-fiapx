@@ -12,8 +12,10 @@ export interface ReportProcessingFailureCommand {
   /** `x-retry-count` of the failed attempt. */
   retryCount: number;
   videoId: string;
-  /** Permanent processing error (P0001...P0005). */
+  /** Permanent processing error (P0001...P0007). */
   error: AppError;
+  /** Delivery abandoned (channel closed): nothing is published, the broker redelivers. */
+  signal?: AbortSignal;
 }
 
 /** `errorMessage` limit of `video.processing.failed`. */
@@ -29,6 +31,7 @@ export class ReportProcessingFailureUseCase {
   constructor(@Inject(EVENT_PUBLISHER) private readonly publisher: EventPublisher) {}
 
   async execute(command: ReportProcessingFailureCommand): Promise<void> {
+    command.signal?.throwIfAborted();
     const attempt = command.retryCount + 1;
     await this.publisher.publishEvent(
       createEvent(

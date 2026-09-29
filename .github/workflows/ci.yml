@@ -425,9 +425,9 @@ jobs:
   #      (forced command, fonte em infra/vm/deploy.sh), que renderiza infra/k8s/overlays/prod com
   #      as imagens ghcr.io/arthurfcs98/fiapx-<app>:sha-<7> fixadas por digest, roda os Jobs de
   #      setup/migração e espera o rollout. O log do deploy aparece aqui, ao vivo;
-  #   3. smoke público: https://fiapx.asdevit.com/api/health/live (host técnico, o que o Ingress
-  #      atende) precisa responder version == sha-<7> deste commit; o endereço oficial
-  #      https://frames.asdevit.com é conferido só como aviso;
+  #   3. smoke público: https://frames.asdevit.com/api/health/live (endereço oficial, TLS Full
+  #      strict na Cloudflare) precisa responder version == sha-<7> deste commit; o host técnico
+  #      https://fiapx.asdevit.com só redireciona (308) para ele na borda, conferido como aviso;
   #   4. se o smoke falhar: `ssh fiapx-vm rollback` e o job fica vermelho.
   # Pré-requisitos (infra/vm/README.md, "Primeiro deploy"): environment `production` com
   # "Deployment branches: main" e os secrets DE ENVIRONMENT VM_HOST, VM_SSH_KEY e
@@ -441,8 +441,9 @@ jobs:
     needs: [ci-ok, images]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    # Worker em Recreate espera até 330 s o vídeo em curso; migração, rollout e smoke cabem aqui.
-    timeout-minutes: 30
+    # Worker em Recreate espera até 720 s o vídeo em curso (ROLLOUT_TIMEOUT do deploy.sh: 900 s);
+    # com Jobs, rollout, um rollback no pior caso (outro rollout) e o smoke, 45 min cabem.
+    timeout-minutes: 45
     permissions: {} # não faz checkout nem usa o GITHUB_TOKEN
     environment: # secrets de environment: só jobs da main (regra do environment) os leem
       name: production
@@ -452,8 +453,8 @@ jobs:
       cancel-in-progress: false
     env:
       RELEASE_SHA: ${{ github.sha }}
-      PUBLIC_URL: https://fiapx.asdevit.com # host técnico (Ingress); decide o rollback
-      BRAND_URL: https://frames.asdevit.com # endereço oficial; só aviso
+      PUBLIC_URL: https://frames.asdevit.com # endereço oficial (Full strict); decide o rollback
+      LEGACY_URL: https://fiapx.asdevit.com # host técnico: na borda só redireciona (308) ao oficial
     steps:
       - name: SSH (chave restrita + host key fixado)
         env:
@@ -530,9 +531,9 @@ jobs:
           echo "publicado: ${ver}"
           ready=$(curl -sS --max-time 8 -A "$ua" -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/health/ready" || true)
           [[ $ready == 200 ]] || { echo "::error::$PUBLIC_URL/api/health/ready respondeu ${ready:-?}"; exit 1; }
-          brand=$(curl -sS --max-time 8 -A "$ua" -H 'Cache-Control: no-cache' "$BRAND_URL/api/health/live" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)
-          [[ $brand == "$expected" ]] || echo "::warning::$BRAND_URL/api/health/live mostra '${brand:-?}' (esperado ${expected}): confira o frames.caddy na borda"
-          echo "### Deploy ${expected}: $PUBLIC_URL e $BRAND_URL" >> "$GITHUB_STEP_SUMMARY"
+          legacy=$(curl -sS --max-time 8 -A "$ua" -o /dev/null -w '%{http_code} %{redirect_url}' "$LEGACY_URL/api/health/live" 2>/dev/null || true)
+          [[ $legacy == "308 $PUBLIC_URL/api/health/live" ]] || echo "::warning::$LEGACY_URL respondeu '${legacy:-?}' (esperado 308 para $PUBLIC_URL): confira o fiapx.caddy na borda"
+          echo "### Deploy ${expected}: $PUBLIC_URL" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Rollback (smoke público falhou)
         if: failure() && steps.smoke.outcome == 'failure'

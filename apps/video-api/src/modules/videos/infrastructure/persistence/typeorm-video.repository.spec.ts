@@ -182,4 +182,39 @@ describe('TypeOrmVideoRepository', () => {
     expect(history.delete).toHaveBeenCalledWith({ videoId: In([VIDEO_ID]) });
     expect(videos.delete).toHaveBeenCalledWith({ userId: USER_ID });
   });
+
+  it('counts pending videos of an owner (QUEUED or PROCESSING)', async () => {
+    const { manager, repo } = setup();
+    manager.query.mockResolvedValueOnce([{ pending: 3 }]).mockResolvedValueOnce([]);
+
+    await expect(repo.countPendingByOwner(USER_ID)).resolves.toBe(3);
+    await expect(repo.countPendingByOwner(USER_ID)).resolves.toBe(0);
+
+    const [sql, params] = manager.query.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain("status IN ('QUEUED', 'PROCESSING')");
+    expect(params).toEqual([USER_ID]);
+  });
+
+  it('reads the status of the existing videos among the ids', async () => {
+    const { manager, repo } = setup();
+    await expect(repo.statusesOf([])).resolves.toEqual(new Map());
+    expect(manager.query).not.toHaveBeenCalled();
+
+    manager.query.mockResolvedValueOnce([{ id: VIDEO_ID, status: 'COMPLETED' }]);
+    await expect(repo.statusesOf([VIDEO_ID, USER_ID])).resolves.toEqual(
+      new Map([[VIDEO_ID, 'COMPLETED']]),
+    );
+    expect(manager.query.mock.calls[0]?.[1]).toEqual([[VIDEO_ID, USER_ID]]);
+  });
+
+  it('sums the bytes of the stored (not expired) zips', async () => {
+    const { manager, repo } = setup();
+    manager.query.mockResolvedValueOnce([{ bytes: '2147483648' }]).mockResolvedValueOnce([]);
+
+    await expect(repo.sumStoredZipBytes()).resolves.toBe(2_147_483_648);
+    await expect(repo.sumStoredZipBytes()).resolves.toBe(0);
+    expect(manager.query.mock.calls[0]?.[0]).toContain(
+      'zip_key IS NOT NULL AND expired_at IS NULL',
+    );
+  });
 });

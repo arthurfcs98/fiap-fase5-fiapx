@@ -64,6 +64,22 @@ export class VideoErrors {
     );
   }
 
+  /**
+   * O usuário já tem `limit` vídeos em andamento (enviando, na fila ou processando): `429`, com
+   * `Retry-After`. Protege a fila e o storage de um usuário só (contratos.md, seção 8).
+   */
+  static TOO_MANY_PENDING_VIDEOS(limit: number, retryAfterSeconds: number): AppErrorException {
+    return new AppErrorException(
+      new AppError(
+        429,
+        'TOO_MANY_PENDING_VIDEOS',
+        'V0007',
+        `Você já tem ${limit} vídeos em andamento. Aguarde alguns terminarem para enviar mais.`,
+        { limit, retryAfterSeconds },
+      ),
+    );
+  }
+
   static INVALID_DOWNLOAD_SIGNATURE(): AppErrorException {
     return new AppErrorException(
       new AppError(

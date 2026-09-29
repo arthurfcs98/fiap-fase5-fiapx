@@ -22,6 +22,8 @@ const settings: VideoSettings = {
   publicBaseUrl: 'https://fiapx.asdevit.com',
   downloadUrlTtlSeconds: 300,
   zipRetentionDays: 7,
+  maxConcurrentUploads: 8,
+  maxPendingVideosPerUser: 5,
 };
 const ZIP_KEY = `${USER_ID}/${VIDEO_ID}.zip`;
 

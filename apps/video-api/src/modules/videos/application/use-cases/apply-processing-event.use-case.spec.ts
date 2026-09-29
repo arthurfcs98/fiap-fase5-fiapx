@@ -91,6 +91,8 @@ describe('ApplyProcessingEventUseCase', () => {
     expect(uow.outbox.events[0]?.aggregateId).toBe(VIDEO_ID);
     expect(storage.contentOf('fiapx-raw', RAW_KEY)).toBeUndefined();
     expect(metrics.completedCount).toBe(1);
+    // Created and completed at the same fake instant: 0 s from upload to result.
+    expect(metrics.turnarounds).toEqual([0]);
   });
 
   it('failed: FAILED with the worker error code + outbox video.failed + raw deleted', async () => {
@@ -122,6 +124,40 @@ describe('ApplyProcessingEventUseCase', () => {
     expect(uow.videos.history).toHaveLength(1);
     expect(metrics.completedCount).toBe(1);
     expect(storage.contentOf('fiapx-raw', RAW_KEY)).toBeUndefined();
+  });
+
+  it("completed pointing at ANOTHER zip key (e.g. another user's frames) is rejected", async () => {
+    const { uow, storage, metrics, useCase } = await setup(
+      aVideo({ status: 'PROCESSING', attempts: 1 }),
+    );
+    const forged = {
+      ...processingCompletedFixture,
+      payload: {
+        ...processingCompletedFixture.payload,
+        zipKey: `9f8e7d6c-5b4a-4c3d-8e2f-1a0b9c8d7e6f/${VIDEO_ID}.zip`,
+      },
+    };
+
+    await expect(useCase.execute(forged, forged.id)).resolves.toMatchObject({
+      result: 'rejected',
+    });
+
+    expect(uow.videos.snapshot(VIDEO_ID)).toMatchObject({ status: 'PROCESSING', zipKey: null });
+    expect(uow.outbox.events).toHaveLength(0);
+    expect(storage.contentOf('fiapx-raw', RAW_KEY)).toBeDefined();
+    expect(metrics.completedCount).toBe(0);
+  });
+
+  it('completed before started (prefetch 10): startedAt becomes the completion time', async () => {
+    const { uow, useCase } = await setup(aVideo({ status: 'QUEUED' }));
+
+    await useCase.execute(processingCompletedFixture, processingCompletedFixture.id);
+
+    expect(uow.videos.snapshot(VIDEO_ID)).toMatchObject({
+      status: 'COMPLETED',
+      startedAt: NOW,
+      completedAt: NOW,
+    });
   });
 
   it('invalid transition (started after COMPLETED) is ignored and acked', async () => {

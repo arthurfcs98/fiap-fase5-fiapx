@@ -185,7 +185,10 @@ export class Video {
     return null;
   }
 
-  /** `video.processing.completed`. */
+  /**
+   * `video.processing.completed`. From QUEUED (the `started` of the same attempt still in the
+   * queue) the start time is unknown: it becomes the completion time instead of staying null.
+   */
   complete(result: ProcessingResult, at: Date): StatusTransition | null {
     if (this.isTerminal) return null;
     const from = this.props.status;
@@ -196,6 +199,7 @@ export class Video {
       frameCount: result.frameCount,
       zipSizeBytes: result.zipSizeBytes,
       attempts: Math.max(this.props.attempts, 1),
+      startedAt: this.props.startedAt ?? at,
       completedAt: at,
       updatedAt: at,
     };
@@ -209,7 +213,11 @@ export class Video {
     };
   }
 
-  /** `video.processing.failed` (worker) or dead-letter (`P0099`, `reason` from the caller). */
+  /**
+   * `video.processing.failed` (worker, with `attempt`: it did start, so a missing start time
+   * becomes `at`) or dead-letter (`P0098`/`P0099`, `reason` from the caller; the video may never
+   * have started).
+   */
   fail(
     failure: ProcessingFailure,
     at: Date,
@@ -224,6 +232,7 @@ export class Video {
       errorCode: failure.errorCode,
       errorMessage: truncate(failure.errorMessage, ERROR_MESSAGE_MAX_LENGTH),
       attempts: Math.max(this.props.attempts, attempt ?? 0),
+      startedAt: attempt === undefined ? this.props.startedAt : (this.props.startedAt ?? at),
       completedAt: at,
       updatedAt: at,
     };

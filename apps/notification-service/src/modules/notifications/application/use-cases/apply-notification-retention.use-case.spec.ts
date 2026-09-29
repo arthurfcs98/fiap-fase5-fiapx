@@ -3,7 +3,13 @@ import type { INotificationRepository } from '../../domain/ports/notification.re
 import { ApplyNotificationRetentionUseCase } from './apply-notification-retention.use-case';
 
 const NOW = new Date('2026-10-31T03:00:00.000Z');
-const SETTINGS = { publicBaseUrl: 'https://x', notifyOnSuccess: false, retentionDays: 30 };
+const SETTINGS = {
+  publicBaseUrl: 'https://x',
+  notifyOnSuccess: false,
+  retentionDays: 30,
+  dailyLimitPerUser: 10,
+  dailyLimit: 80,
+};
 
 function repositoryReturning(value: number | null): INotificationRepository {
   return {

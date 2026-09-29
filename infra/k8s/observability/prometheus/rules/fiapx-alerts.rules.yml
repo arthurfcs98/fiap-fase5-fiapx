@@ -1,5 +1,5 @@
 # =============================================================================
-# Alertas do FIAP X (contratos.md, seção 13). Os nomes são do contrato; não renomear.
+# Alertas do FIAP Frames (contratos.md, seção 13). Os nomes são do contrato; não renomear.
 # Aparecem no Grafana (Alerting -> Alert rules, "Data source-managed") e em
 # http://localhost:9090/alerts (port-forward). Não há Alertmanager (orçamento de memória da
 # VM): o alerta é visto no Grafana/Prometheus. Passo a passo de cada um:
@@ -89,6 +89,37 @@ groups:
           summary: "Fila worker.video-uploaded acumulando"
           description: "{{ $value }} vídeos esperando há mais de 10 min. Confira se o KEDA escalou o worker (máx. 2 réplicas) e se o worker está consumindo."
           runbook: "docs/observabilidade.md#fiapxqueuebackloghigh"
+
+      # Fila principal sem consumidor: um serviço de pé que parou de consumir (consumer cancelado
+      # pelo broker e sem conseguir re-assinar, permissão errada...). No worker e no
+      # notification-service o /health também falha (o Kubernetes reinicia); no api só este
+      # alerta avisa (a liveness HTTP não depende da fila).
+      - alert: FiapxQueueWithoutConsumer
+        expr: |
+          max by (queue) (
+            rabbitmq_queue_consumers{queue=~"worker\\.video-uploaded|api\\.video-processing|api\\.video-deadletter|notification\\.events"}
+          ) == 0
+        for: 5m
+        labels:
+          severity: critical
+          slo: nenhuma-requisicao-perdida
+        annotations:
+          summary: "Fila {{ $labels.queue }} sem consumidor"
+          description: "Ninguém consome {{ $labels.queue }} há 5 min: as mensagens acumulam. Confira o pod dono da fila e os logs 'Consumer cancelado pelo broker'."
+          runbook: "docs/observabilidade.md#fiapxqueuewithoutconsumer"
+
+      # Zips guardados perto da quota do bucket (2,5 GiB, jobs/garage-init.yaml): acima dela
+      # cada vídeo novo falha com P0007 até a retenção (ZIP_RETENTION_DAYS) liberar espaço.
+      - alert: FiapxZipStorageHigh
+        expr: max(fiapx_zip_storage_bytes) > 2147483648
+        for: 10m
+        labels:
+          severity: warning
+          slo: sucesso-pipeline
+        annotations:
+          summary: "fiapx-zips perto da quota"
+          description: "{{ $value | humanize1024 }}B de zips guardados (quota 2,5 GiB). Acima dela os vídeos novos falham com P0007."
+          runbook: "docs/observabilidade.md#fiapxzipstoragehigh"
 
       # O KEDA mantém no mínimo 1 worker: nenhum respondendo = ninguém processa vídeo.
       - alert: FiapxWorkerDown

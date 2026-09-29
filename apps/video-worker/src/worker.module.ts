@@ -5,12 +5,8 @@ import { storageOptionsFromConfig, StorageModule } from '@fiapx/storage';
 import { Module } from '@nestjs/common';
 import { LoggerModule } from 'nestjs-pino';
 import type { WorkerConfig } from './config/worker.config';
-import {
-  SERVICE_NAME,
-  WORKER_CONFIG,
-  WORKER_SHUTDOWN_TIMEOUT_MS,
-  workerConfigSchema,
-} from './config/worker.config';
+import { SERVICE_NAME, WORKER_CONFIG, workerConfigSchema } from './config/worker.config';
+import { shutdownTimeoutMsFor } from './modules/processing/application/processing.settings';
 import { ProcessingModule } from './modules/processing/processing.module';
 
 /**
@@ -45,7 +41,8 @@ import { ProcessingModule } from './modules/processing/processing.module';
       useFactory: (config: WorkerConfig) => ({
         url: config.RABBITMQ_URL,
         connectionName: SERVICE_NAME,
-        shutdownTimeoutMs: WORKER_SHUTDOWN_TIMEOUT_MS,
+        // SIGTERM waits for the WHOLE job in progress (ffprobe + ffmpeg + transfers).
+        shutdownTimeoutMs: shutdownTimeoutMsFor(config),
       }),
     }),
     StorageModule.forRootAsync({

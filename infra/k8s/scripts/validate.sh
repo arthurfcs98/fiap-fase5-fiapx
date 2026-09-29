@@ -12,8 +12,8 @@
 #    4. Prometheus: config, regras e testes unitários das regras (promtool);
 #    5. Loki: config (-verify-config); Alloy: sintaxe/semântica (validate) e formatação (fmt);
 #    6. dashboards do Grafana: JSON válido, uid/título do contrato, datasources existentes;
-#    7. nomes do contrato (8 alertas, 2 dashboards) presentes;
-#    8. cópias em sincronia com o compose (init do Postgres, garage.toml);
+#    7. nomes do contrato (10 alertas, 2 dashboards) presentes;
+#    8. cópias em sincronia com o compose (init do Postgres, garage.toml, enabled_plugins);
 #    9. shellcheck nos scripts e "node --check" nos .mjs.
 # Imagens das ferramentas: as MESMAS (tag + digest) dos manifestos, lidas deles.
 # =============================================================================
@@ -135,16 +135,17 @@ check_dashboard() {  # $1 arquivo, $2 uid, $3 título exato
   [[ -z $dup ]] || bad "$1: ids de painel repetidos ($dup)"
   ok "$1 ($(jq '.panels | length' "$f") painéis)"
 }
-check_dashboard fiapx-pipeline.json fiapx-pipeline 'FIAP X — Pipeline de vídeos'
-check_dashboard fiapx-slos.json fiapx-slos 'FIAP X — SLOs'
+check_dashboard fiapx-pipeline.json fiapx-pipeline 'FIAP Frames — Pipeline de vídeos'
+check_dashboard fiapx-slos.json fiapx-slos 'FIAP Frames — SLOs'
 for alert in FiapxApiErrorRateHigh FiapxUploadLatencyHigh FiapxProcessingSlow FiapxDlqNotEmpty \
-             FiapxOutboxBacklog FiapxQueueBacklogHigh FiapxWorkerDown FiapxTargetDown; do
+             FiapxOutboxBacklog FiapxQueueBacklogHigh FiapxQueueWithoutConsumer FiapxZipStorageHigh \
+             FiapxWorkerDown FiapxTargetDown; do
   grep -q "alert: $alert$" "$K8S/observability/prometheus/rules/fiapx-alerts.rules.yml" || bad "alerta $alert ausente"
 done
-if [[ $(grep -c '^      - alert: ' "$K8S/observability/prometheus/rules/fiapx-alerts.rules.yml") == 8 ]]; then
-  ok "8 alertas do contrato"
+if [[ $(grep -c '^      - alert: ' "$K8S/observability/prometheus/rules/fiapx-alerts.rules.yml") == 10 ]]; then
+  ok "10 alertas do contrato"
 else
-  bad "número de alertas != 8"
+  bad "número de alertas != 10"
 fi
 
 # ------------------------------------------------------------------ 8. cópias em sincronia
@@ -153,6 +154,8 @@ run "postgres init = infra/postgres/init" cmp -s "$ROOT/infra/postgres/init/00-c
   "$K8S/base/data/postgres/init/00-create-databases.sh"
 run "garage.toml = infra/garage/garage.toml" cmp -s "$ROOT/infra/garage/garage.toml" \
   "$K8S/base/data/garage/garage.toml"
+run "enabled_plugins = infra/rabbitmq/enabled_plugins" cmp -s "$ROOT/infra/rabbitmq/enabled_plugins" \
+  "$K8S/base/data/rabbitmq/enabled_plugins"
 
 # ------------------------------------------------------------------ 9. scripts
 step "scripts"

@@ -1,6 +1,7 @@
 import { EVENT_TYPES } from '@fiapx/contracts';
 import {
   buildTopology,
+  deadLetterQueueArguments,
   deadLetterQueueName,
   DELIVERY_LIMIT,
   EXCHANGES,
@@ -96,6 +97,13 @@ describe('topologia RabbitMQ (contratos.md, seção 2)', () => {
         { name: EXCHANGES.events, type: 'topic', durable: true },
         { name: EXCHANGES.deadLetter, type: 'direct', durable: true },
       ]);
+    });
+
+    it('DLQs: só quorum nos argumentos (limites e TTL vêm da operator policy, sem migração)', () => {
+      expect(deadLetterQueueArguments()).toEqual({ 'x-queue-type': 'quorum' });
+      const dlqs = topology.queues.filter((q) => q.name.endsWith('.dlq'));
+      expect(dlqs).toHaveLength(4);
+      expect(dlqs.every((q) => q.arguments['x-queue-type'] === 'quorum')).toBe(true);
     });
 
     it('cria principal + 3 retries + DLQ para cada fila (20 filas quorum)', () => {

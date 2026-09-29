@@ -6,6 +6,7 @@ import {
   INSERT_IF_ABSENT_SQL,
   RETENTION_LOCK_KEY,
   TypeOrmNotificationRepository,
+  USER_LOCK_SQL,
 } from './typeorm-notification.repository';
 
 /**
@@ -59,24 +60,28 @@ function sqlOf(update: Record<string, unknown>): Record<string, unknown> {
 
 describe('TypeOrmNotificationRepository', () => {
   describe('registerIfAbsent', () => {
-    it('inserts with ON CONFLICT (dedup_key) DO NOTHING and reports whether it was created', async () => {
-      const { dataSource, subject } = fakeDataSource();
-      dataSource.query.mockResolvedValueOnce([{ id: 'n1' }]).mockResolvedValueOnce([]);
-      const notification = {
-        id: 'n1',
-        dedupKey: 'VIDEO_FAILED:v1',
-        userId: 'u1',
-        type: 'VIDEO_FAILED' as const,
-        recipient: 'ana@example.com',
-        subject: 's',
-        payload: { videoId: 'v1', userName: 'Ana' },
-      };
+    const notification = {
+      id: 'n1',
+      dedupKey: 'VIDEO_FAILED:v1',
+      userId: 'u1',
+      type: 'VIDEO_FAILED' as const,
+      recipient: 'ana@example.com',
+      subject: 's',
+      payload: { videoId: 'v1', userName: 'Ana' },
+    };
 
-      await expect(subject.registerIfAbsent(notification)).resolves.toBe(true);
-      await expect(subject.registerIfAbsent(notification)).resolves.toBe(false);
+    it('under the per-user lock: inserts unless the user was deleted (ON CONFLICT DO NOTHING)', async () => {
+      const { manager, subject } = fakeDataSource();
+      manager.query
+        .mockResolvedValueOnce([]) // lock
+        .mockResolvedValueOnce([{ id: 'n1' }]); // insert
 
+      await expect(subject.registerIfAbsent(notification)).resolves.toBe('created');
+
+      expect(manager.query).toHaveBeenNthCalledWith(1, USER_LOCK_SQL, ['u1']);
       expect(INSERT_IF_ABSENT_SQL).toContain('ON CONFLICT (dedup_key) DO NOTHING');
-      expect(dataSource.query).toHaveBeenCalledWith(INSERT_IF_ABSENT_SQL, [
+      expect(INSERT_IF_ABSENT_SQL).toContain('NOT EXISTS (SELECT 1 FROM deleted_users');
+      expect(manager.query).toHaveBeenNthCalledWith(2, INSERT_IF_ABSENT_SQL, [
         'n1',
         'VIDEO_FAILED:v1',
         'u1',
@@ -85,6 +90,43 @@ describe('TypeOrmNotificationRepository', () => {
         's',
         '{"videoId":"v1","userName":"Ana"}',
       ]);
+    });
+
+    it('tells a redelivery (row exists) from a deleted user', async () => {
+      const { manager, subject } = fakeDataSource();
+      manager.query
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ gone: false }])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ gone: true }]);
+
+      await expect(subject.registerIfAbsent(notification)).resolves.toBe('exists');
+      await expect(subject.registerIfAbsent(notification)).resolves.toBe('user-deleted');
+    });
+  });
+
+  describe('budget queries', () => {
+    it('isRegistered checks the dedup key', async () => {
+      const { dataSource, subject } = fakeDataSource();
+      dataSource.query.mockResolvedValueOnce([{ found: true }]).mockResolvedValueOnce([]);
+
+      await expect(subject.isRegistered('VIDEO_FAILED:v1')).resolves.toBe(true);
+      await expect(subject.isRegistered('VIDEO_FAILED:v2')).resolves.toBe(false);
+      expect(dataSource.query.mock.calls[0]?.[1]).toEqual(['VIDEO_FAILED:v1']);
+    });
+
+    it('countCreatedSince counts the user and everyone since the moment', async () => {
+      const { dataSource, subject } = fakeDataSource();
+      const since = new Date('2026-10-09T12:00:00Z');
+      dataSource.query.mockResolvedValueOnce([{ user: 3, total: 40 }]).mockResolvedValueOnce([]);
+
+      await expect(subject.countCreatedSince(since, 'u1')).resolves.toEqual({ user: 3, total: 40 });
+      await expect(subject.countCreatedSince(since, 'u1')).resolves.toEqual({ user: 0, total: 0 });
+      const [sql, params] = dataSource.query.mock.calls[0] as [string, unknown[]];
+      expect(sql).toContain('FILTER (WHERE user_id = $2)');
+      expect(params).toEqual([since, 'u1']);
     });
   });
 
@@ -172,13 +214,20 @@ describe('TypeOrmNotificationRepository', () => {
   });
 
   describe('anonymizeByUser', () => {
-    it('sets recipient="removido" and payload={} on the rows not yet anonymized', async () => {
-      const { repository, subject } = fakeDataSource();
+    it('records the deleted user and anonymizes its rows, in one transaction under the user lock', async () => {
+      const { dataSource, manager, repository, subject } = fakeDataSource();
       repository.update.mockResolvedValueOnce({ affected: 2 }).mockResolvedValueOnce({});
 
       await expect(subject.anonymizeByUser('u1')).resolves.toBe(2);
       await expect(subject.anonymizeByUser('u1')).resolves.toBe(0);
 
+      expect(dataSource.transaction).toHaveBeenCalledTimes(2);
+      expect(manager.query).toHaveBeenNthCalledWith(1, USER_LOCK_SQL, ['u1']);
+      expect(manager.query).toHaveBeenNthCalledWith(
+        2,
+        'INSERT INTO deleted_users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING',
+        ['u1'],
+      );
       expect(repository.update).toHaveBeenCalledWith(
         { userId: 'u1', recipient: Not('removido') },
         { recipient: 'removido', payload: {} },
@@ -203,6 +252,10 @@ describe('TypeOrmNotificationRepository', () => {
       expect(repository.update).toHaveBeenCalledWith(
         { createdAt: LessThan(cutoff), recipient: Not('removido') },
         { recipient: 'removido', payload: {} },
+      );
+      expect(manager.query).toHaveBeenCalledWith(
+        'DELETE FROM deleted_users WHERE deleted_at < $1',
+        [cutoff],
       );
     });
 

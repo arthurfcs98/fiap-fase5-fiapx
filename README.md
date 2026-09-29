@@ -12,26 +12,67 @@ microsserviços NestJS que se comunicam por fila:
 |---|---|---|
 | `video-api` | Cadastro/login (JWT), upload em streaming, status, download assinado, outbox, LGPD (`/api/me`), frontend estático | HTTP `:3000` (prefixo `/api`) + `:9464` interno |
 | `video-worker` | ffprobe/ffmpeg (`fps=1`) e zip em streaming para o storage; escala por fila (KEDA) | só `:9464` interno (`/health`, `/metrics`) |
-| `notification-service` | E-mail de falha (e de sucesso, opcional): Resend em produção, Mailpit local | só `:9464` interno (`/health`, `/metrics`) |
+| `notification-service` | E-mail de falha (o de sucesso é opcional e fica desligado em produção): Resend em produção, Mailpit local | só `:9464` interno (`/health`, `/metrics`) |
 
 Infra: PostgreSQL 16, RabbitMQ 4.3 (filas quorum, retry por filas `.retry.N`, DLQ), Redis 7
 (throttling e `Idempotency-Key`), Garage (S3), Mailpit (local). Produção: K3s na VM, com
 Prometheus, Grafana, Loki e Grafana Alloy (`infra/k8s/`).
 
+## Arquitetura
+
+O upload responde `202` assim que o vídeo está gravado (storage + banco, com o evento no
+outbox na mesma transação); o processamento segue por fila para workers que escalam pelo tamanho
+dela (KEDA), e o usuário acompanha o status e recebe e-mail em caso de falha. Filas quorum com
+retry, DLQ, consumidores idempotentes e pausa do consumo quando uma dependência cai garantem que
+nenhum pedido se perca em picos; os limites de capacidade respondem com `Retry-After`.
+
 ```mermaid
-flowchart LR
-  U[Usuário] -->|HTTPS| API[video-api]
-  API -->|stream| S3[(Garage S3)]
-  API -->|tx: vídeo + outbox| PG[(Postgres)]
-  API -->|outbox relay| MQ{{RabbitMQ}}
-  MQ -->|video.uploaded| W[video-worker xN]
-  W -->|ffmpeg fps=1 → zip| S3
-  W -->|processing.*| MQ
-  MQ --> API
-  API -->|video.failed / completed / user.deleted| MQ
-  MQ --> N[notification-service]
-  N -->|e-mail| M[Resend / Mailpit]
+flowchart TB
+  classDef person fill:#2f5bd3,stroke:#1d3a8a,color:#ffffff
+  classDef app fill:#1f6feb,stroke:#0b3d91,color:#ffffff
+  classDef data fill:#0e7c86,stroke:#075e66,color:#ffffff
+  classDef obs fill:#6e40c9,stroke:#4c2889,color:#ffffff
+  classDef ext fill:#6e7781,stroke:#424a53,color:#ffffff
+
+  U(["Usuário<br/>navegador ou API"]):::person
+
+  subgraph FF["FIAP Frames (namespace fiapx)"]
+    API["<b>video-api</b><br/>NestJS 11, HTTP :3000 /api<br/>login JWT, upload em stream,<br/>status, download assinado,<br/>outbox relay, LGPD, frontend"]:::app
+    MQ{{"<b>RabbitMQ 4.3</b><br/>fiapx.events + fiapx.dlx<br/>filas quorum, .retry.N, .dlq"}}:::data
+    W["<b>video-worker</b> (1..N)<br/>NestJS + ffprobe/ffmpeg<br/>fps=1, zip em stream"]:::app
+    N["<b>notification-service</b><br/>NestJS, e-mail<br/>com deduplicação"]:::app
+    RD[("<b>Redis 7</b><br/>throttling e cache<br/>de Idempotency-Key")]:::data
+    S3[("<b>Garage v2 (S3)</b><br/>fiapx-raw, fiapx-zips<br/>buckets privados")]:::data
+    subgraph PG["PostgreSQL 16: 1 instância, 2 bancos, 2 roles"]
+      PGV[("fiapx_video")]:::data
+      PGN[("fiapx_notification")]:::data
+    end
+    OBS["<b>Observabilidade</b><br/>Prometheus, Grafana,<br/>Loki, Alloy"]:::obs
+  end
+
+  KEDA["KEDA<br/>(ns keda)"]:::ext
+  RS["Resend<br/>(e-mail)"]:::ext
+
+  U -->|"HTTPS JSON e multipart"| API
+  API -->|"SQL (TypeORM)"| PGV
+  API -->|"contadores e cache"| RD
+  API <-->|"publica pelo outbox (confirm)<br/>consome api.video-processing<br/>e api.video-deadletter"| MQ
+  API -->|"PUT, GET e DELETE<br/>em stream"| S3
+  MQ <-->|"consome worker.video-uploaded (prefetch 1)<br/>publica video.processing.*"| W
+  W -->|"GET do vídeo, PUT do zip"| S3
+  MQ -->|"notification.events"| N
+  N -->|"SQL (TypeORM)"| PGN
+  N -->|"API HTTPS"| RS
+  KEDA -.->|"lê o tamanho da fila<br/>e escala 1..N"| W
+  OBS -.->|"coleta métricas :9464 e logs"| API & W & N
 ```
+
+- **Documento de arquitetura** (antes e depois, C4, implantação, fluxos, mensageria, dados,
+  matriz de requisitos): [`docs/arquitetura.md`](docs/arquitetura.md)
+- **Decisões (ADRs)**: [`docs/adr/`](docs/adr/README.md)
+- **Scripts de criação** do banco e dos demais recursos: [`infra/db/`](infra/db/README.md)
+- **Roteiro do vídeo** de apresentação: [`docs/apresentacao/roteiro-video.md`](docs/apresentacao/roteiro-video.md)
+- **Produção**: <https://frames.asdevit.com>
 
 ## Como rodar (5 minutos)
 
@@ -126,10 +167,11 @@ examples/                 # vídeos pequenos versionados (ok 5 s, ok 10 s, corro
 docker/                   # Dockerfile único parametrizado (APP, WITH_FFMPEG) + healthcheck
 compose.yaml              # stack local e do CI (infra, one-shots de migração, 3 apps)
 infra/garage, infra/postgres   # config/init do compose
+infra/db/                 # índice dos scripts de criação + schema SQL legível (fiapx_video, fiapx_notification)
 infra/k8s/                # Kustomize (base, overlays prod/local, jobs, observabilidade)
 infra/vm/                 # K3s na VM compartilhada: instalação, firewall, Caddy, deploy.sh (forced command)
 scripts/                  # dev-secrets.sh, compose-smoke.sh, test-cov.mjs, demo/, git-hooks/
-docs/                     # contratos, libs, exemplos, LGPD, observabilidade, runbooks, estudos
+docs/                     # arquitetura + ADRs, contratos, libs, exemplos, LGPD, observabilidade, runbooks, apresentação, estudos
 legacy/projeto-base/      # o "antes": código Go original
 ```
 
@@ -144,12 +186,14 @@ variáveis e métricas em [`docs/arquitetura/contratos.md`](docs/arquitetura/con
   (contratos.md, seção 11). **Prometheus + Grafana** no cluster, 2 dashboards provisionados.
 - **Logs**: pino JSON com `correlationId`; **Grafana Alloy** (o Promtail foi descontinuado) envia
   ao **Loki** (72 h). O mesmo id liga HTTP → outbox → fila → worker → e-mail.
-- **SLOs, não SLA**: 5 SLOs numa janela de 7 dias com orçamento de erro e 8 alertas
-  (disponibilidade ≥ 99,5%, upload p95 < 5 s, processamento p95 < 120 s, sucesso ≥ 99%, nenhuma
-  requisição perdida). Detalhes: [`docs/observabilidade.md`](docs/observabilidade.md).
+- **SLOs, não SLA**: 5 SLOs numa janela de 7 dias com orçamento de erro (disponibilidade
+  ≥ 99,5%, upload p95 < 5 s, processamento p95 < 120 s, 95% dos vídeos prontos em até 300 s do
+  upload, sucesso ≥ 99%), a meta "nenhuma requisição perdida" e 10 alertas. Detalhes:
+  [`docs/observabilidade.md`](docs/observabilidade.md).
 - **LGPD**: aceite da política no cadastro (data + versão), vídeo original apagado ao terminar,
-  zip por 7 dias, notificações anonimizadas em 30 dias, `GET /api/me/data` (exportação) e
-  `DELETE /api/me` (eliminação), logs só com IDs (verificado pelo BDD). Detalhes:
+  zip por 7 dias, mensagens paradas nas DLQs por no máximo 7 dias, notificações anonimizadas em
+  30 dias, `GET /api/me/data` (exportação) e `DELETE /api/me` (eliminação, que também barra
+  e-mails de eventos atrasados), logs só com IDs (verificado pelo BDD). Detalhes:
   [`docs/lgpd.md`](docs/lgpd.md) e o runbook [`docs/runbooks/incidente-dados.md`](docs/runbooks/incidente-dados.md).
 
 ## CI/CD
@@ -200,6 +244,9 @@ Actions fixadas pelo SHA do commit e imagens de ferramentas por tag + digest; o 
 
 ## Documentação
 
+- **Arquitetura (documento principal)**: [`docs/arquitetura.md`](docs/arquitetura.md) · ADRs: [`docs/adr/`](docs/adr/README.md)
+- Scripts de criação do banco e dos demais recursos: [`infra/db/README.md`](infra/db/README.md) (SQL legível em [`infra/db/schema/`](infra/db/schema))
+- Roteiro do vídeo de apresentação: [`docs/apresentacao/roteiro-video.md`](docs/apresentacao/roteiro-video.md) · produção: <https://frames.asdevit.com>
 - Exemplos de uso: [`docs/exemplos.md`](docs/exemplos.md) · [`docs/exemplos.http`](docs/exemplos.http)
 - Contratos entre serviços: [`docs/arquitetura/contratos.md`](docs/arquitetura/contratos.md)
 - API das libs: [`docs/arquitetura/libs.md`](docs/arquitetura/libs.md)

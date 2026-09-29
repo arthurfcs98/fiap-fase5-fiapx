@@ -33,6 +33,8 @@ describe('MessagingMetrics', () => {
       'permanent_failure',
       'invalid',
       'requeued',
+      'deferred',
+      'aborted',
     ]);
   });
 });

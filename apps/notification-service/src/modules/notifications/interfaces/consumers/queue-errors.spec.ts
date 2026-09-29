@@ -1,4 +1,9 @@
-import { NonRetryableError, ProcessingErrors, RetryableError } from '@fiapx/common';
+import {
+  DependencyUnavailableError,
+  NonRetryableError,
+  ProcessingErrors,
+  RetryableError,
+} from '@fiapx/common';
 import { toQueueError } from './queue-errors';
 
 describe('toQueueError', () => {
@@ -20,6 +25,21 @@ describe('toQueueError', () => {
 
     expect(error).toBeInstanceOf(RetryableError);
     expect(error.message).toBe('Falha transitória: QueryFailedError: insert failed for [email]');
+    expect(error.cause).toBeUndefined();
+  });
+
+  it('database unreachable → DependencyUnavailableError (the consumer pauses), still without cause', () => {
+    const refused = Object.assign(new Error('getaddrinfo ENOTFOUND postgres'), {
+      code: 'ENOTFOUND',
+    });
+
+    const error = toQueueError(refused);
+
+    expect(error).toBeInstanceOf(DependencyUnavailableError);
+    expect((error as DependencyUnavailableError).dependency).toBe('postgres');
+    expect(error.message).toBe(
+      'Falha transitória: DEPENDENCY_UNAVAILABLE (postgres): Error: getaddrinfo ENOTFOUND postgres',
+    );
     expect(error.cause).toBeUndefined();
   });
 });

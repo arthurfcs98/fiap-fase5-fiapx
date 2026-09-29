@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream';
 import { Logger } from '@nestjs/common';
 import { videoUploadedEvent } from '@fiapx/contracts';
+import { StorageQuotaExceededError } from '@fiapx/storage';
 import { InMemoryObjectStorage } from '@fiapx/storage/testing';
 import {
   aVideo,
@@ -15,9 +16,11 @@ import {
 import { mp4Bytes, pngBytes } from '../../../../../test/support/media';
 import { FileTypeSignatureInspector } from '../../infrastructure/file-signature/file-type-signature.inspector';
 import { DuplicateIdempotencyKeyError } from '../../domain/video.repository';
+import type { VideoSettings } from '../video.settings';
 import { UploadVideoUseCase } from './upload-video.use-case';
 
 const buckets = { raw: 'fiapx-raw', zips: 'fiapx-zips' };
+const settings = { maxPendingVideosPerUser: 2 } as VideoSettings;
 
 function setup() {
   const uow = new FakeUnitOfWork();
@@ -33,6 +36,7 @@ function setup() {
     cache,
     metrics,
     new FixedClock(),
+    settings,
   );
   return { uow, storage, cache, metrics, useCase };
 }
@@ -45,6 +49,37 @@ const upload = (name: string, bytes: Buffer, extra: Record<string, unknown> = {}
 });
 
 describe('UploadVideoUseCase', () => {
+  describe('assertWithinPendingLimit (MAX_PENDING_VIDEOS_PER_USER)', () => {
+    it('counts QUEUED/PROCESSING videos plus uploads still streaming', async () => {
+      const { uow, useCase } = setup();
+      await expect(useCase.assertWithinPendingLimit(USER_ID, 1)).resolves.toBeUndefined();
+
+      uow.videos.add(aVideo({ status: 'QUEUED' }));
+      await expect(useCase.assertWithinPendingLimit(USER_ID, 0)).resolves.toBeUndefined();
+      await expect(useCase.assertWithinPendingLimit(USER_ID, 1)).rejects.toMatchObject({
+        appError: { code: 'V0007', httpStatus: 429, metadata: { limit: 2, retryAfterSeconds: 15 } },
+      });
+    });
+
+    it('finished videos do not count', async () => {
+      const { uow, useCase } = setup();
+      uow.videos.add(aVideo({ id: '00000000-0000-4000-8000-000000000001', status: 'COMPLETED' }));
+      uow.videos.add(aVideo({ id: '00000000-0000-4000-8000-000000000002', status: 'FAILED' }));
+
+      await expect(useCase.assertWithinPendingLimit(USER_ID, 1)).resolves.toBeUndefined();
+    });
+  });
+
+  it('fiapx-raw full (quota) → 503 X0003 with a longer Retry-After, nothing committed', async () => {
+    const { uow, storage, useCase } = setup();
+    storage.failNext('put', new StorageQuotaExceededError('put', 'fiapx-raw', undefined));
+
+    await expect(useCase.execute(upload('demo.mp4', mp4Bytes(2048)))).rejects.toMatchObject({
+      appError: { code: 'X0003', metadata: { retryAfterSeconds: 30 } },
+    });
+    expect(uow.outbox.events).toEqual([]);
+  });
+
   it('streams to fiapx-raw and commits video + history + outbox video.uploaded in one transaction', async () => {
     const { uow, storage, cache, metrics, useCase } = setup();
     const bytes = mp4Bytes(4096);

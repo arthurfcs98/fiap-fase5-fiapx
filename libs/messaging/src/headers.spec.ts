@@ -1,11 +1,43 @@
 import {
+  effectiveRetryCount,
   MESSAGE_HEADERS,
   readDeliveryCount,
   readLastDeathReason,
+  readOriginDeathReason,
   readRetryCount,
   retryHeaders,
   stripBrokerHeaders,
 } from './headers';
+
+describe('effectiveRetryCount', () => {
+  it('vale o x-retry-count enquanto a mensagem circula entre a fila e as .retry.N', () => {
+    expect(effectiveRetryCount({ 'x-retry-count': 2 })).toBe(2);
+    expect(effectiveRetryCount({ 'x-retry-count': 2, 'x-last-death-reason': 'expired' })).toBe(2);
+    expect(effectiveRetryCount(undefined)).toBe(0);
+  });
+
+  it.each(['rejected', 'delivery_limit', 'maxlen'])(
+    'mensagem que chegou por dead-letter (%s) começa um ciclo novo',
+    (reason) => {
+      expect(effectiveRetryCount({ 'x-retry-count': 3, 'x-last-death-reason': reason })).toBe(0);
+    },
+  );
+});
+
+describe('readOriginDeathReason', () => {
+  it('prefere o dead-letter atual; depois de um retry, o motivo guardado na cópia', () => {
+    expect(readOriginDeathReason({ 'x-last-death-reason': 'rejected' })).toBe('rejected');
+    expect(
+      readOriginDeathReason({
+        'x-last-death-reason': 'expired',
+        [MESSAGE_HEADERS.originDeathReason]: 'delivery_limit',
+      }),
+    ).toBe('delivery_limit');
+    expect(readOriginDeathReason({ 'x-last-death-reason': 'expired' })).toBe('expired');
+    expect(readOriginDeathReason({ [MESSAGE_HEADERS.originDeathReason]: '' })).toBeUndefined();
+    expect(readOriginDeathReason(undefined)).toBeUndefined();
+  });
+});
 
 describe('readRetryCount', () => {
   it.each([

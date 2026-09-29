@@ -22,7 +22,8 @@ interface StoredObject {
  * (api e worker) sem Garage. Não usar em produção.
  *
  * `failNext(operation)` simula uma falha de infraestrutura ({@link ObjectStorageError}) na
- * próxima chamada daquela operação.
+ * próxima chamada daquela operação. Passando um `ObjectStorageError` pronto (ex.:
+ * `StorageQuotaExceededError`), ele é lançado como está.
  */
 export class InMemoryObjectStorage implements IObjectStorage {
   private readonly objects = new Map<string, StoredObject>();
@@ -114,6 +115,7 @@ export class InMemoryObjectStorage implements IObjectStorage {
     if (!this.failures.has(operation)) return;
     const cause = this.failures.get(operation);
     this.failures.delete(operation);
+    if (cause instanceof ObjectStorageError) throw cause;
     throw new ObjectStorageError(operation, bucket, key, { cause });
   }
 }

@@ -5,7 +5,8 @@
 #   camada de dados (tier=data) -> fase setup -> fase migrate -> resto do estado desejado
 #
 # - fiapx.io/phase=setup:   garage-init (layout, chaves, buckets, quotas) e rabbitmq-init
-#                           (usuário do KEDA, limites por fila);
+#                           (topologia do código como admin, usuários por serviço, usuário do
+#                           KEDA, limites por fila);
 # - fiapx.io/phase=migrate: migrações TypeORM do video-api e do notification-service.
 #
 # O deploy.sh renderiza esta pasta com nameSuffix "-<sha7>" (um Job novo por release) e troca

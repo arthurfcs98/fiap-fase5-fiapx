@@ -11,8 +11,12 @@ import {
   PutObjectCommand,
   S3ServiceException,
 } from '@aws-sdk/client-s3';
-import { ObjectNotFoundError, ObjectStorageError } from './object-storage.port';
-import { createS3Client, isNotFound, S3ObjectStorage } from './s3-object-storage';
+import {
+  ObjectNotFoundError,
+  ObjectStorageError,
+  StorageQuotaExceededError,
+} from './object-storage.port';
+import { createS3Client, isNotFound, isQuotaExceeded, S3ObjectStorage } from './s3-object-storage';
 
 const options = {
   endpoint: 'http://garage:3900',
@@ -105,6 +109,31 @@ describe('S3ObjectStorage', () => {
 
       expect(error).toBeInstanceOf(ObjectStorageError);
       expect(error).toMatchObject({ operation: 'put', bucket: 'b', key: 'k' });
+    });
+
+    it('quota do bucket estourada (403 do Garage) vira StorageQuotaExceededError', async () => {
+      const { send, storage } = setup();
+      const cause = new S3ServiceException({
+        name: 'AccessDenied',
+        $fault: 'client',
+        $metadata: { httpStatusCode: 403 },
+        message: 'Forbidden: Bucket size quota is reached, maximum total size of objects: 1024',
+      });
+      send.mockRejectedValue(cause);
+
+      const error = await storage
+        .putStream({ bucket: 'fiapx-zips', key: 'u/v.zip', body: Buffer.from('x') })
+        .catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(StorageQuotaExceededError);
+      expect(error).toBeInstanceOf(ObjectStorageError);
+      expect(error).toMatchObject({
+        name: 'StorageQuotaExceededError',
+        operation: 'put',
+        bucket: 'fiapx-zips',
+        key: 'u/v.zip',
+        cause,
+      });
     });
 
     it('erro no stream de origem (cliente desconectou) falha o upload', async () => {
@@ -267,6 +296,26 @@ describe('S3ObjectStorage', () => {
   it('usa partes de 8 MiB e 2 em paralelo por padrão', () => {
     const storage = new S3ObjectStorage({} as S3Client);
     expect(storage).toMatchObject({ partSize: 8 * 1024 * 1024, queueSize: 2 });
+  });
+});
+
+describe('isQuotaExceeded', () => {
+  it.each([
+    [new Error('Bucket size quota is reached'), true],
+    [{ Code: 'QuotaExceeded' }, true],
+    [new Error('upload falhou', { cause: new Error('bucket quota reached') }), true],
+    [new Error('The request signature we calculated does not match'), false],
+    [{ message: 42 }, false],
+    [null, false],
+    ['quota', false],
+  ])('%p → %p', (error, expected) => {
+    expect(isQuotaExceeded(error)).toBe(expected);
+  });
+
+  it('não desce mais que 3 níveis de cause', () => {
+    let error: unknown = new Error('quota');
+    for (let i = 0; i < 4; i += 1) error = { cause: error };
+    expect(isQuotaExceeded(error)).toBe(false);
   });
 });
 

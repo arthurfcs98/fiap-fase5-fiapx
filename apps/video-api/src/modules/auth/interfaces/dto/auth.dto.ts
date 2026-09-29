@@ -11,12 +11,20 @@ const email = z
   .max(254, 'E-mail longo demais.')
   .pipe(z.email({ error: 'Informe um e-mail válido.' }));
 
+/**
+ * The name goes into the e-mails sent by `frames@asdevit.com` (greeting): link-like text
+ * (`http://`, `www.`) would let anyone use the notifications to send phishing links from our
+ * domain to an address they do not own (sign-up e-mails are not verified).
+ */
+const LINK_LIKE = /:\/\/|www\./i;
+
 export const registerSchema = z.object({
   name: z
     .string({ error: 'Informe o nome.' })
     .trim()
     .min(1, 'Informe o nome.')
-    .max(120, 'O nome pode ter no máximo 120 caracteres.'),
+    .max(120, 'O nome pode ter no máximo 120 caracteres.')
+    .refine((value) => !LINK_LIKE.test(value), 'O nome não pode conter endereços de sites.'),
   email,
   password: z
     .string({ error: 'Informe a senha.' })

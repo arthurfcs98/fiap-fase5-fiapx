@@ -50,6 +50,8 @@ describe('notificationConfigSchema', () => {
       NOTIFY_ON_SUCCESS: false,
       PUBLIC_BASE_URL: DEFAULT_PUBLIC_BASE_URL,
       NOTIFICATION_RETENTION_DAYS: 30,
+      NOTIFICATION_DAILY_LIMIT_PER_USER: 10,
+      NOTIFICATION_DAILY_LIMIT: 80,
     });
   });
 

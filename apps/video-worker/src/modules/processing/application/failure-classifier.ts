@@ -15,7 +15,11 @@ export interface MediaToolFailureContext {
 /**
  * Maps a media tool failure to the queue semantics:
  * - timeout on the first attempt → transient (may be CPU contention); on later attempts → P0004;
- * - killed by a signal we did not send (OOM), disk full, binary missing → transient;
+ * - killed by a signal we did not send (OOM), binary missing → transient;
+ * - disk full → P0006: `/work` is private to the replica and holds one job at a time (the
+ *   startup sweep empties it), so the frames of THIS video do not fit; retrying only burns
+ *   four ffmpeg runs;
+ * - cancelled by the caller (delivery abandoned) → transient (the runner discards it anyway);
  * - non-zero exit code → P0001 (ffmpeg/ffprobe rejected the input).
  */
 export function classifyMediaToolError(
@@ -33,7 +37,9 @@ export function classifyMediaToolError(
     case 'killed':
       return new RetryableError(`${tool}_KILLED: ${error.detail}`, { cause: error });
     case 'no_space':
-      return new RetryableError(`WORK_DIR_FULL: ${error.detail}`, { cause: error });
+      return ProcessingErrors.OUTPUT_TOO_LARGE(`WORK_DIR_FULL: ${error.detail}`);
+    case 'aborted':
+      return new RetryableError(`${tool}_ABORTED: ${error.detail}`, { cause: error });
     case 'unavailable':
       return new RetryableError(`${tool}_UNAVAILABLE: ${error.detail}`, { cause: error });
     case 'failed':

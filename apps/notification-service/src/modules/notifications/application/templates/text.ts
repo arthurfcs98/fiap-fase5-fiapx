@@ -24,3 +24,16 @@ export function truncateText(value: string, maxLength: number): string {
   const chars = Array.from(value);
   return chars.length > maxLength ? `${chars.slice(0, maxLength - 1).join('')}…` : value;
 }
+
+/**
+ * Text that no mail client can turn into a link: only letters (with accents), digits, spaces,
+ * apostrophes, hyphens and underscores survive; everything else (`.`, `/`, `:`, `@`, `<`...)
+ * becomes a space. The e-mails go out from our domain to an address nobody verified, so user
+ * text in them must never carry a URL, a domain or an address (anti-phishing).
+ */
+export function linkSafeText(value: string): string {
+  return singleLine(value)
+    .replace(/[^\p{L}\p{M}\p{N}\s'_-]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}

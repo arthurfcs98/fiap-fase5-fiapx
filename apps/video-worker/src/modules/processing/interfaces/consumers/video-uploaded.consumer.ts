@@ -14,7 +14,8 @@ import { ReportProcessingFailureUseCase } from '../../application/use-cases/repo
  * `RetryableError` → `.retry.N` (then DLX); `NonRetryableError` → `video.processing.failed` + ack.
  *
  * SIGTERM: `MessageConsumers` cancels the consumer and waits for the video in progress
- * (`WORKER_SHUTDOWN_TIMEOUT_MS`) before the connection closes.
+ * (`shutdownTimeoutMsFor`: ffprobe + ffmpeg budgets + transfers) before the connection closes.
+ * The delivery `signal` (channel closed) is passed down: the job stops and publishes nothing.
  */
 @Injectable()
 export class VideoUploadedConsumer implements OnApplicationBootstrap {
@@ -40,6 +41,7 @@ export class VideoUploadedConsumer implements OnApplicationBootstrap {
           correlationId: event.correlationId,
           retryCount: context.retryCount,
           video: event.payload,
+          signal: context.signal,
         });
       },
       onPermanentFailure: (event, error, context) =>
@@ -49,6 +51,7 @@ export class VideoUploadedConsumer implements OnApplicationBootstrap {
           retryCount: context.retryCount,
           videoId: event.payload.videoId,
           error: error.appError,
+          signal: context.signal,
         }),
     };
   }

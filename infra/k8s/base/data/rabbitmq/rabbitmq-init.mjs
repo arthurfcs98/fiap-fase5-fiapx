@@ -8,15 +8,34 @@
  *   3. cria/atualiza o usuário do KEDA ("fiapx-keda", tag "monitoring") com a senha do
  *      Secret fiapx-keda-rabbitmq e permissões VAZIAS (^$) no vhost: ele só lê o tamanho das
  *      filas pela API de management, nunca publica nem consome;
- *   4. aplica a operator policy "fiapx-limits" (max-length-bytes por fila): teto de disco do
- *      broker (infra/vm/README.md, regra 10). Operator policy não muda os argumentos das
- *      filas, então não gera PRECONDITION_FAILED com a topologia declarada pelos serviços.
- *      Estourou o teto: vale o x-overflow da fila (reject-publish nas filas de trabalho: o
- *      publisher recebe nack e o outbox tenta de novo).
+ *   4. cria/atualiza UM USUÁRIO POR SERVIÇO (fiapx-api, fiapx-worker, fiapx-notification), sem
+ *      tag (sem acesso ao management) e com o mínimo (art. 46 da LGPD; revisão M3):
+ *        configure: só a topologia do contrato (cada serviço a declara ao conectar);
+ *        write:     amq.default (cópias de retry), as filas ligadas (bind) e, para api e worker,
+ *                   fiapx.events;
+ *        read:      fiapx.events/fiapx.dlx (bind) e SÓ as filas que o serviço consome;
+ *        topic:     no fiapx.events, cada um só publica as routing keys que são dele (o worker
+ *                   não consegue forjar video.completed/user.deleted; o notification não
+ *                   publica nada).
+ *      O administrador "fiapx" fica só para este Job e para o broker;
+ *   5. aplica as operator policies (não mudam argumentos de fila: sem PRECONDITION_FAILED):
+ *        "fiapx-limits"      (.*, prioridade 0): max-length-bytes por fila, teto de disco do
+ *                            broker (infra/vm/README.md, regra 10). Estourou: vale o x-overflow
+ *                            da fila (reject-publish nas filas de trabalho: nack, o outbox e o
+ *                            retry tentam de novo);
+ *        "fiapx-dlq-limits"  (\.dlq$, prioridade 1, ganha da anterior): o mesmo teto com
+ *                            overflow=reject-publish (o padrão drop-head apagaria as mais antigas
+ *                            calado; com dead-letter at-least-once a mensagem espera na fila de
+ *                            origem) e message-ttl de 7 dias (LGPD: as DLQs guardam e-mail, nome
+ *                            e nome do arquivo; o redrive precisa acontecer antes).
  *
- * A TOPOLOGIA (exchanges, filas quorum, retry, DLQ) não é declarada aqui: ela vive em código
- * (libs/messaging/src/topology.ts) e cada serviço a declara a cada (re)conexão. Este Job só
- * lista quantas filas já existem, para diagnóstico.
+ * A TOPOLOGIA (exchanges, filas quorum, retry, DLQ) não é declarada por este script: ela vive
+ * em código (libs/messaging/src/topology.ts) e é criada pelo initContainer "topology" do mesmo
+ * Job (entry setup-topology.js do video-api, como administrador) ANTES deste script: a topic
+ * permission do passo 4 exige o fiapx.events existindo, e os usuários por serviço não conseguem
+ * CRIAR fila com dead-letter (o RabbitMQ exige read na fila e write no fiapx.dlx). Os serviços
+ * só a redeclaram a cada (re)conexão (para fila existente basta configure). Este script só
+ * lista quantas filas existem, para diagnóstico.
  *
  * Nunca imprime senha.
  */
@@ -29,6 +48,39 @@ const KEDA_USER = env.KEDA_USER ?? 'fiapx-keda';
 const KEDA_PASSWORD = required('KEDA_PASSWORD');
 const VHOST = env.RABBITMQ_VHOST ?? '/';
 const MAX_QUEUE_BYTES = positiveInt('RABBITMQ_MAX_QUEUE_BYTES', 64 * 1024 ** 2);
+const DLQ_TTL_MS = positiveInt('RABBITMQ_DLQ_TTL_MS', 7 * 24 * 60 * 60 * 1000);
+
+// Topologia do contrato (libs/messaging/src/topology.ts): 4 filas principais, cada uma com
+// .retry.1..3 e .dlq, e as 2 exchanges.
+const MAIN_QUEUES = '(worker\\.video-uploaded|api\\.video-processing|api\\.video-deadletter|notification\\.events)';
+const TOPOLOGY = `^(fiapx\\.(events|dlx)|${MAIN_QUEUES}(\\.retry\\.[1-3]|\\.dlq)?)$`;
+const BIND_TARGETS = `${MAIN_QUEUES}(\\.dlq)?`;
+const EXCHANGES_READ = 'fiapx\\.(events|dlx)';
+
+/** Um usuário por serviço, com o mínimo (ver o cabeçalho). */
+const SERVICE_USERS = [
+  {
+    user: 'fiapx-api',
+    password: required('API_PASSWORD'),
+    publishesEvents: true,
+    consumes: 'api\\.video-processing|api\\.video-deadletter',
+    routingKeys: '^(video\\.uploaded|video\\.completed|video\\.failed|user\\.deleted)$',
+  },
+  {
+    user: 'fiapx-worker',
+    password: required('WORKER_PASSWORD'),
+    publishesEvents: true,
+    consumes: 'worker\\.video-uploaded',
+    routingKeys: '^video\\.processing\\.(started|completed|failed)$',
+  },
+  {
+    user: 'fiapx-notification',
+    password: required('NOTIFICATION_PASSWORD'),
+    publishesEvents: false,
+    consumes: 'notification\\.events',
+    routingKeys: '^$',
+  },
+];
 const TIMEOUT_MS = positiveInt('RABBITMQ_INIT_TIMEOUT_MS', 120_000);
 const AUTH = `Basic ${Buffer.from(`${ADMIN_USER}:${ADMIN_PASSWORD}`).toString('base64')}`;
 const V = encodeURIComponent(VHOST);
@@ -106,6 +158,22 @@ async function main() {
   });
   log(`usuário ${KEDA_USER} ok (tag monitoring, sem permissão de mensagens)`);
 
+  for (const service of SERVICE_USERS) {
+    const user = encodeURIComponent(service.user);
+    await api('PUT', `/api/users/${user}`, { password: service.password, tags: '' });
+    await api('PUT', `/api/permissions/${V}/${user}`, {
+      configure: TOPOLOGY,
+      write: `^(amq\\.default|${service.publishesEvents ? 'fiapx\\.events|' : ''}${BIND_TARGETS})$`,
+      read: `^(${EXCHANGES_READ}|${service.consumes})$`,
+    });
+    await api('PUT', `/api/topic-permissions/${V}/${user}`, {
+      exchange: 'fiapx.events',
+      write: service.routingKeys,
+      read: '.*',
+    });
+    log(`usuário ${service.user} ok (sem tag; lê só ${service.consumes.replaceAll('\\', '')})`);
+  }
+
   await api('PUT', `/api/operator-policies/${V}/fiapx-limits`, {
     pattern: '.*',
     'apply-to': 'queues',
@@ -114,11 +182,20 @@ async function main() {
   });
   log(`operator policy fiapx-limits ok (max-length-bytes=${MAX_QUEUE_BYTES} por fila)`);
 
+  await api('PUT', `/api/operator-policies/${V}/fiapx-dlq-limits`, {
+    pattern: '\\.dlq$',
+    'apply-to': 'queues',
+    priority: 1,
+    definition: {
+      'max-length-bytes': MAX_QUEUE_BYTES,
+      overflow: 'reject-publish',
+      'message-ttl': DLQ_TTL_MS,
+    },
+  });
+  log(`operator policy fiapx-dlq-limits ok (reject-publish, message-ttl=${DLQ_TTL_MS} ms)`);
+
   const queues = await api('GET', `/api/queues/${V}?columns=name`);
-  log(
-    `${queues.length} fila(s) no vhost (a topologia é declarada pelos serviços ao conectar; ` +
-      'no primeiro deploy pode ser 0)',
-  );
+  log(`${queues.length} fila(s) no vhost (topologia declarada pelo initContainer "topology")`);
 }
 
 main().catch((error) => {

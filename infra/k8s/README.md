@@ -1,6 +1,6 @@
-# infra/k8s — manifestos Kubernetes do FIAP X
+# infra/k8s — manifestos Kubernetes do FIAP Frames
 
-Tudo que roda do FIAP X no K3s da VM compartilhada, descrito como código (Kustomize), mais os
+Tudo que roda do FIAP Frames no K3s da VM compartilhada, descrito como código (Kustomize), mais os
 scripts para criar os segredos, validar sem cluster e testar num K3s local (k3d).
 
 > Leia junto: [`infra/vm/README.md`](../vm/README.md) (como o K3s foi instalado, o orçamento da
@@ -91,7 +91,7 @@ Convenções que os manifestos seguem para o `deploy.sh` aceitar (conferidas pel
 | Imagens dos apps sem tag | `ghcr.io/arthurfcs98/fiapx-<app>`; o deploy injeta `@sha256:...` |
 | Imagens de infra com tag + digest | as mesmas do `compose.yaml` (Postgres, RabbitMQ, Redis, Garage, Node) |
 | Deployment com HPA/KEDA sem `replicas` | `video-api` (HPA) e `video-worker` (KEDA) |
-| `progressDeadlineSeconds` 180 / 480 | api e notification 180; worker 480 (> grace de 330 s) |
+| `progressDeadlineSeconds` 180 / 900 | api e notification 180; worker 900 (> grace de 720 s) |
 | request de memória < limit, prioridade `fiapx-*` | todos os containers (QoS Burstable) |
 | ConfigMaps por `configMapGenerator` | mudou a config -> hash novo -> rollout (e o rollback volta a antiga) |
 
@@ -163,7 +163,7 @@ falharia na VM. A diferença: o Traefik é o embutido do k3d (na VM é o do `30-
 | Componente | Tipo | Réplicas | CPU req/lim | Mem req/lim | Volume | Detalhes |
 |---|---|---|---|---|---|---|
 | video-api | Deployment + HPA | 1-2 | 150m/500m | 160Mi/320Mi | — | rolling (surge 1, indisponível 0); probes `/api/health/live` e `/ready`; `preStop sleep 5` |
-| video-worker | Deployment + KEDA | 1-2 | 250m/1 | 256Mi/512Mi | `/work` emptyDir 2Gi | **Recreate**; grace **330 s**; `fsGroup 1000` (dono do `/work`); prioridade `fiapx-lote` |
+| video-worker | Deployment + KEDA | 1-2 | 250m/1 | 256Mi/512Mi | `/work` emptyDir 2Gi | **Recreate**; grace **720 s** (o shutdown espera o vídeo inteiro: 30 + 600 + 60 = 690 s); `fsGroup 1000` (dono do `/work`); prioridade `fiapx-lote` |
 | notification-service | Deployment | 1 | 25m/200m | 96Mi/192Mi | — | **Recreate**; probes `:9464/health` |
 | postgres 16 | StatefulSet | 1 | 100m/500m | 192Mi/320Mi | 1Gi | `shared_buffers=64MB`, `max_connections=40`; init cria `fiapx_video` e `fiapx_notification` com usuários separados |
 | rabbitmq 4.3 | StatefulSet | 1 | 100m/500m | 256Mi/512Mi | 1Gi | `vm_memory_high_watermark.absolute=300MiB`, métricas por fila na 15692, probes TCP |
@@ -179,7 +179,7 @@ Grafana, ajustado pelo que foi medido no smoke (seção 10).
 
 ### 6.3 Segurança de cada pod
 
-Todo pod do FIAP X roda com o perfil **restricted** do Pod Security (o namespace exige
+Todo pod do FIAP Frames roda com o perfil **restricted** do Pod Security (o namespace exige
 `baseline` e só avisa no `restricted`; aqui não sai nenhum aviso):
 
 | Campo | Valor | Por quê |
@@ -190,7 +190,7 @@ Todo pod do FIAP X roda com o perfil **restricted** do Pod Security (o namespace
 | `seccompProfile: RuntimeDefault` | sempre | filtra syscalls perigosas |
 | `automountServiceAccountToken: false` | todos menos Prometheus e Alloy | os apps não falam com a API do Kubernetes |
 | `enableServiceLinks: false` | sempre | sem variáveis `RABBITMQ_PORT=tcp://...` injetadas (o RabbitMQ lê `RABBITMQ_*` do ambiente!) |
-| request de memória < limit | sempre | QoS Burstable: num OOM global, os pods do FIAP X morrem antes dos vizinhos |
+| request de memória < limit | sempre | QoS Burstable: num OOM global, os pods do FIAP Frames morrem antes dos vizinhos |
 | Segredos por arquivo (`<VAR>_FILE`) | apps | não aparecem em `kubectl describe` nem no ambiente do processo |
 
 ### 6.4 Probes (como o Kubernetes sabe se o pod está bem)
@@ -232,38 +232,88 @@ temporários (0700, apagados no fim) e cria os Secrets com `--from-file`.
 | Secret | Chaves | Usado por |
 |---|---|---|
 | `fiapx-postgres` | `POSTGRES_PASSWORD`, `VIDEO_DB_PASSWORD`, `NOTIF_DB_PASSWORD` | postgres (init dos bancos) |
-| `fiapx-rabbitmq` | `RABBITMQ_DEFAULT_PASS` (usuário `fiapx`) | rabbitmq, Job rabbitmq-init |
+| `fiapx-rabbitmq` | `RABBITMQ_DEFAULT_PASS` (administrador `fiapx`), `API_PASSWORD`, `WORKER_PASSWORD`, `NOTIFICATION_PASSWORD` (usuários por serviço) | rabbitmq, Job rabbitmq-init |
 | `fiapx-redis` | `REDIS_PASSWORD` | redis |
 | `fiapx-garage` | `GARAGE_RPC_SECRET`, `GARAGE_ADMIN_TOKEN`, `GARAGE_METRICS_TOKEN`, `API_ACCESS_KEY_ID`/`API_SECRET_ACCESS_KEY`, `WORKER_ACCESS_KEY_ID`/`WORKER_SECRET_ACCESS_KEY` | garage, Job garage-init, Prometheus (só o metrics token) |
 | `fiapx-metrics` | `METRICS_TOKEN` | Prometheus (Bearer do `/metrics` dos apps) |
 | `fiapx-keda-rabbitmq` | `KEDA_PASSWORD`, `host` | TriggerAuthentication, Job rabbitmq-init |
 | `fiapx-grafana` | `admin-user`, `admin-password` | grafana |
-| `fiapx-video-api` | `DB_PASSWORD`, `RABBITMQ_URL`, `REDIS_URL`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `JWT_SECRET`, `DOWNLOAD_URL_SECRET`, `METRICS_TOKEN` | video-api, Job video-api-migrate |
-| `fiapx-video-worker` | `RABBITMQ_URL`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `METRICS_TOKEN` | video-worker |
-| `fiapx-notification-service` | `DB_PASSWORD`, `RABBITMQ_URL`, `METRICS_TOKEN`, `RESEND_API_KEY` | notification-service, Job notification-migrate |
+| `fiapx-video-api` | `DB_PASSWORD`, `RABBITMQ_URL` (usuário `fiapx-api`), `REDIS_URL`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `JWT_SECRET`, `DOWNLOAD_URL_SECRET`, `METRICS_TOKEN` | video-api, Job video-api-migrate |
+| `fiapx-video-worker` | `RABBITMQ_URL` (usuário `fiapx-worker`), `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `METRICS_TOKEN` | video-worker |
+| `fiapx-notification-service` | `DB_PASSWORD`, `RABBITMQ_URL` (usuário `fiapx-notification`), `METRICS_TOKEN`, `RESEND_API_KEY` | notification-service, Job notification-migrate |
 
 Menor privilégio no storage: o api usa a chave `svc-api` (leitura e escrita nos dois buckets: a
 retenção LGPD e a eliminação de conta apagam objetos) e o worker a `svc-worker` (só leitura no
 `fiapx-raw`, leitura e escrita no `fiapx-zips`). O KEDA usa o usuário `fiapx-keda` (tag
-`monitoring`, permissões `^$`: lê tamanho de fila, não lê nem publica mensagem).
+`monitoring`, permissões `^$`: lê tamanho de fila, não lê nem publica mensagem). No RabbitMQ,
+um usuário por serviço (seção 8.1).
 
 **Rotação** (ex.: vazou uma senha). Os valores de base "moram" num Secret só; os compostos
 (URLs, `DB_PASSWORD` dos apps) são refeitos a partir dele:
 
 1. Postgres: `ALTER ROLE fiapx_video PASSWORD '...'` (via `k3s kubectl exec -it postgres-0 -- psql -U fiapx`)
-   com o valor novo gravado antes no Secret; RabbitMQ: `rabbitmqctl change_password fiapx ...`;
+   com o valor novo gravado antes no Secret; RabbitMQ: nada à mão (o Job `rabbitmq-init` do
+   próximo deploy grava as senhas do Secret nos usuários por serviço; o administrador `fiapx`
+   continua com `rabbitmqctl change_password fiapx ...`);
    Garage: `garage key delete` da chave antiga (o `garage-init` importa a nova no próximo deploy);
    tokens/JWT: basta o Secret novo.
 2. `k3s kubectl -n fiapx delete secret <base> <os que usam o valor>` e
    `./scripts/bootstrap-secrets.sh --yes` (recria com valores novos e coerentes).
 3. `k3s kubectl -n fiapx rollout restart deploy,sts` para os pods lerem os arquivos novos.
 
+### 8.1 Usuários do RabbitMQ por serviço
+
+Cada app conecta com o próprio usuário (Job `rabbitmq-init`, `base/data/rabbitmq/rabbitmq-init.mjs`);
+o administrador `fiapx` fica só para o broker, o Job e a UI de management (redrive das DLQs).
+
+| Usuário | Consome (`read`) | Publica no `fiapx.events` (topic permission) |
+|---|---|---|
+| `fiapx-api` | `api.video-processing`, `api.video-deadletter` | `video.uploaded`, `video.completed`, `video.failed`, `user.deleted` |
+| `fiapx-worker` | `worker.video-uploaded` | `video.processing.started`, `.completed`, `.failed` |
+| `fiapx-notification` | `notification.events` | nada |
+
+Todos: sem tag (sem management), `configure` só nos nomes da topologia (o startup redeclara),
+`write` em `amq.default` (cópias de retry) e nas filas ligadas por bind; ninguém lê DLQ nem
+publica no `fiapx.dlx`. O worker (que roda ffmpeg em vídeo enviado por usuário) não consegue
+forjar `video.completed` nem `user.deleted`. Como os usuários não conseguem CRIAR fila com
+dead-letter (o RabbitMQ exige `read` na fila e `write` no DLX), a topologia é criada pelo
+initContainer `topology` do mesmo Job, como administrador, antes dos apps (seção 9). Efeito
+colateral aceito do `configure`: um serviço consegue apagar uma fila da topologia. Fila apagada
+(por um serviço ou à mão): apague o Job, se ainda existir
+(`k3s kubectl -n fiapx delete job -l app.kubernetes.io/name=rabbitmq-init`), e repita o deploy da
+release atual (Actions -> Re-run): o `deploy.sh` recria o Job, que recria a fila. Teste com broker real:
+`libs/messaging/test/rabbitmq-permissions.int-spec.ts`.
+
+**Cluster criado antes dos usuários por serviço** (os Secrets dos apps têm `RABBITMQ_URL` com o
+administrador). Migração em duas fases, sem janela em que um pod fique sem conseguir logar. Leve o
+`bootstrap-secrets.sh` novo para a VM (passo 2 da seção 4) e, como root:
+
+```bash
+cd /root/fiapx-infra-k8s
+# Fase 1, ANTES do deploy desta versão: completa fiapx-rabbitmq com as 3 senhas novas (o Job
+# rabbitmq-init precisa delas). Avisa [DIVERGE] na RABBITMQ_URL dos 3 apps e sai com código 1:
+# esperado, os apps continuam com o administrador por enquanto.
+KUBECTL="k3s kubectl" ./scripts/bootstrap-secrets.sh --yes
+
+# (deploy desta versão: o Job cria os usuários, as policies e a topologia)
+
+# Fase 2, DEPOIS do deploy: troca a URL dos 3 apps pela do usuário de cada um e reinicia.
+for s in fiapx-video-api fiapx-video-worker fiapx-notification-service; do
+  k3s kubectl -n fiapx patch secret "$s" --type json -p '[{"op":"remove","path":"/data/RABBITMQ_URL"}]'
+done
+KUBECTL="k3s kubectl" ./scripts/bootstrap-secrets.sh --yes     # agora sem DIVERGE
+k3s kubectl -n fiapx rollout restart deploy/video-api deploy/video-worker deploy/notification-service
+# conferir: management do RabbitMQ -> Connections só com fiapx-api, fiapx-worker, fiapx-notification
+```
+
+O worker (Recreate) espera até 720 s o vídeo em curso antes de reiniciar.
+
 ## 9. Jobs de setup e de migração
 
 | Job | Fase | O que faz | Imagem |
 |---|---|---|---|
 | `garage-init` | setup | layout do nó, importa `svc-api`/`svc-worker`, cria `fiapx-raw`/`fiapx-zips`, permissões por chave (Allow + Deny) e quotas | Node 22 fixado (mesma do compose) + script `base/data/garage/garage-init.mjs` |
-| `rabbitmq-init` | setup | usuário `fiapx-keda` (monitoring), operator policy `fiapx-limits` (`max-length-bytes` 64 MiB por fila) | Node 22 + `base/data/rabbitmq/rabbitmq-init.mjs` |
+| `rabbitmq-init` | setup | 1) initContainer `topology`: a topologia do código (`node dist/setup-topology.js`, como administrador); 2) usuários `fiapx-api`, `fiapx-worker`, `fiapx-notification` (seção 8.1) e `fiapx-keda` (monitoring), operator policies `fiapx-limits` (`max-length-bytes` 64 MiB por fila) e `fiapx-dlq-limits` (DLQs: 64 MiB, `overflow: reject-publish`, `message-ttl` 7 dias) | imagem do video-api (digest da release) + Node 22 com `base/data/rabbitmq/rabbitmq-init.mjs` |
 | `video-api-migrate` | migrate | `node dist/migrate.js` no banco `fiapx_video` | imagem do video-api (digest da release) |
 | `notification-migrate` | migrate | `node dist/migrate.js` no banco `fiapx_notification` | imagem do notification-service |
 
@@ -274,8 +324,10 @@ retenção LGPD e a eliminação de conta apagam objetos) e o worker a `svc-work
   as variáveis de banco (`DB_*`, `DB_PASSWORD_FILE`). As duas imagens já trazem o entry
   (`apps/<app>/webpack.config.js` + `webpackConfigPath` no `nest-cli.json`); o compose usa o mesmo
   comando nos one-shots `video-api-migrate` e `notification-migrate`.
-- **Topologia do RabbitMQ**: não é declarada pelo `rabbitmq-init`. Ela vive em
-  `libs/messaging/src/topology.ts` e cada serviço a declara a cada conexão (padrão da lib).
+- **Topologia do RabbitMQ**: vive em `libs/messaging/src/topology.ts` (fonte única). O
+  `rabbitmq-init` a cria pelo entry `setup-topology.js` da imagem do video-api (mesma função
+  que os serviços usam), e cada serviço a redeclara a cada conexão (padrão da lib). Fila ou
+  binding novo: atualizar também as regex de permissão do `rabbitmq-init.mjs`.
 
 ## 10. Decisões e diferenças em relação ao plano
 
@@ -290,7 +342,7 @@ retenção LGPD e a eliminação de conta apagam objetos) e o worker a `svc-work
 | Grafana | admin por Secret, port-forward | igual, **sem PVC** | dashboards/datasources provisionados; o PVC de 256Mi é opcional na tabela 4.3 |
 | Recursos do Grafana | 50m/250m, 96Mi/192Mi, `GOMEMLIMIT=150MiB` (tabela 4.3) | **50m/500m, 128Mi/320Mi, `GOMEMLIMIT=256MiB`**, SQLite em WAL | medido no k3d (3 de 4 execuções): o heap vivo do Grafana 12 (~150 MiB) encosta no GOMEMLIMIT de 150MiB, o GC roda sem parar, a CPU prende em 250m, o `/api/health` estoura e a liveness reinicia o pod em loop. Com 250m de CPU, abrir um dashboard levava 6-15 s. Cabe na quota (seção 7); pedido de ajuste da tabela 4.3 ao SRE |
 | KEDA | `pollingInterval`/`cooldownPeriod` | sem os dois | com mínimo 1 não têm efeito (o KEDA 2.21 avisa) |
-| Topologia no `rabbitmq-init` | Job declara tudo | serviços declaram (lib); o Job cria usuário do KEDA e limites | não há entry `cli.js` nos apps; duplicar a topologia fora de `topology.ts` quebraria a fonte única |
+| Topologia no `rabbitmq-init` | Job declara tudo | o Job declara pelo entry `setup-topology.js` do video-api (a função da lib) e os serviços redeclaram | com um usuário por serviço, só o administrador consegue criar as filas (dead-letter exige `read` na fila e `write` no DLX); o entry evita duplicar a topologia fora de `topology.ts` |
 
 ## 11. O que foi testado
 
@@ -299,9 +351,9 @@ retenção LGPD e a eliminação de conta apagam objetos) e o worker a `svc-work
 | `validate.sh`: kustomize (prod, local, jobs) | 41 objetos + 4 Jobs |
 | regras do `deploy.sh` e quota (`check-manifests.mjs`) | OK, números batem com a tabela 4.3 do `infra/vm` |
 | kubeconform estrito (schemas 1.33 + CRDs do KEDA) | 41/41 e 4/4 válidos |
-| `promtool check config/rules` + **13 testes unitários** das regras (`promtool test rules`) | OK (os 8 alertas disparam e não disparam onde devem; SLIs calculados certo, inclusive `le="5.0"` do Prometheus 3) |
+| `promtool check config/rules` + **17 testes unitários** das regras (`promtool test rules`, 27 verificações de PromQL em `observability/prometheus/tests/fiapx-rules.test.yml`) | OK (os 10 alertas disparam e não disparam onde devem; SLIs calculados certo, inclusive `le="5.0"` do Prometheus 3) |
 | `loki -verify-config`, `alloy validate` e `alloy fmt` | OK |
-| **smoke no k3d** (K3s v1.36.4 + grades do SRE + KEDA 2.21) | todos os pods prontos sob PSA/quota/VAP reais; Jobs de setup OK (buckets, chaves, quotas, usuário do KEDA, operator policy); Jobs de migração OK (`video-api-migrate` e `notification-migrate` aplicam `Init1790553600000`); `/api/health/ready` 200 pelo Traefik; Prometheus com todos os alvos `up` (apps com Bearer, Garage com token, RabbitMQ, KEDA, cAdvisor) e 26 regras; Loki recebendo logs dos 10 componentes com rótulos só `namespace/app/level` e `correlationId` filtrável; Grafana com os 2 dashboards e os 2 datasources OK; KEDA escalando o worker de 1 para 2 com 3 mensagens na fila |
+| **smoke no k3d** (K3s v1.36.4 + grades do SRE + KEDA 2.21) | todos os pods prontos sob PSA/quota/VAP reais; Jobs de setup OK num broker vazio (buckets, chaves, quotas; topologia pelo initContainer `topology`, 20 filas; usuários por serviço, usuário do KEDA, operator policies); Jobs de migração OK (`video-api-migrate` aplica `Init1790553600000` e `StatusHistoryIndex1790640000000`, `notification-migrate` aplica `Init1790553600000` e `DeletedUsers1790640000000`); `/api/health/ready` 200 pelo Traefik (`{status, service, version}`); conexões AMQP só de `fiapx-api`, `fiapx-worker` e `fiapx-notification` (nenhum app como o administrador); DLQs com a policy `fiapx-dlq-limits`; plugin de shovel ativo; Prometheus com todos os alvos `up` (apps com Bearer, Garage com token, RabbitMQ, KEDA, cAdvisor) e 31 regras (21 de gravação + 10 alertas); Loki recebendo logs dos 10 componentes com rótulos só `namespace/app/level` e `correlationId` filtrável; Grafana com os 2 dashboards e os 2 datasources OK; KEDA escalando o worker de 1 para 2 com 3 mensagens na fila |
 
 ## 12. Pendências
 

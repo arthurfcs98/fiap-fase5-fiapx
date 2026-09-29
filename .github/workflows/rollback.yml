@@ -13,7 +13,8 @@ jobs:
   rollback:
     name: rollback (release anterior na VM)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # O rollout do worker (Recreate) espera até 720 s o vídeo em curso; ROLLOUT_TIMEOUT = 900 s.
+    timeout-minutes: 25
     permissions: {}
     environment:
       name: production

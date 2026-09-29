@@ -1,4 +1,4 @@
-# FIAP X — atalhos de desenvolvimento. `make help` lista os alvos.
+# FIAP Frames — atalhos de desenvolvimento. `make help` lista os alvos.
 SHELL := /usr/bin/env bash
 COMPOSE ?= docker compose
 APPS := video-api video-worker notification-service

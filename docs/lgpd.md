@@ -1,4 +1,4 @@
-# LGPD no FIAP X (documento para a banca)
+# LGPD no FIAP Frames (documento para a banca)
 
 > Lei 13.709/2018 (LGPD). Regras obrigatórias da implementação:
 > [`docs/arquitetura/contratos.md`](arquitetura/contratos.md), seção 12. Este documento mostra
@@ -11,9 +11,9 @@
 |---|---|
 | Que dados pessoais? | Nome, e-mail, hash bcrypt da senha, o **conteúdo dos vídeos** (pode mostrar pessoas), o nome original do arquivo e o destinatário dos e-mails. Nada além disso (minimização, art. 6º III). |
 | Base legal? | Execução do serviço pedido pelo usuário (art. 7º V), com **aceite explícito** da política no cadastro, gravado com data e versão (art. 9º). Logs e limites de tentativa: legítimo interesse (art. 7º IX), sem dado pessoal. |
-| Por quanto tempo? | Vídeo original: **apagado quando o processamento termina**. Zip: **7 dias**. Notificações: anonimizadas após **30 dias**. Logs: **72 h**. Conta: até o usuário excluir. |
+| Por quanto tempo? | Vídeo original: **apagado quando o processamento termina** (com varredura horária de sobras). Zip: **7 dias**. Mensagens paradas nas filas mortas: **7 dias**. Notificações: anonimizadas após **30 dias**. Logs: **72 h**. Conta: até o usuário excluir. |
 | Direitos? | `GET /api/me/data` (acesso e portabilidade, JSON) e `DELETE /api/me` (eliminação, com confirmação de senha). Correção e demais pedidos pelo contato da política. |
-| Segurança? | TLS ponta a ponta, bcrypt custo 12, JWT de 1 h revogado na eliminação, isolamento por dono (404), buckets privados, link de download assinado de 5 min, logs mascarados, segredos fora do Git. |
+| Segurança? | TLS do navegador até a VM no endereço oficial (Cloudflare em SSL Full (strict) até o Caddy da VM) e, dentro da VM, HTTP que não sai do host; bcrypt custo 12, JWT de 1 h revogado na eliminação, isolamento por dono (404), buckets privados, link de download assinado de 5 min, logs mascarados, segredos fora do Git. |
 
 ## 1. Mapa de dados
 
@@ -25,10 +25,11 @@
 | Conteúdo do vídeo | Garage, bucket privado `fiapx-raw`, chave `{userId}/{videoId}.{ext}` | video-api grava; worker lê | Extrair os frames | **Apagado ao chegar em COMPLETED ou FAILED** |
 | Frames (`.zip`) | Garage, bucket privado `fiapx-zips`, chave `{userId}/{videoId}.zip` | worker grava; video-api entrega | Download pelo usuário | **`ZIP_RETENTION_DAYS` (7 dias)** após a conclusão |
 | `videos.original_name` + metadados (tamanho, status, erro, datas) e `video_status_history` | Postgres `fiapx_video` | video-api | Listagem, histórico, suporte | Até a eliminação da conta |
-| Payload dos eventos `video.completed`/`video.failed` (e-mail, nome, nome do arquivo) | `outbox_events` (Postgres) e mensagem no RabbitMQ | video-api → notification-service | Enviar o e-mail de aviso | Linha publicada: 7 dias; apagada na eliminação da conta |
+| Payload dos eventos `video.completed`/`video.failed` (e-mail, nome, nome do arquivo) | `outbox_events` (Postgres) e mensagem no RabbitMQ | video-api → notification-service | Enviar o e-mail de aviso | Linha publicada: 7 dias; apagada na eliminação da conta. Mensagem que falhou e parou numa DLQ (`*.dlq`): no máximo **7 dias** (operator policy `fiapx-dlq-limits`, `message-ttl`) |
 | `notifications.recipient` e `payload` | Postgres `fiapx_notification` | notification-service | Histórico e idempotência do e-mail | Anonimizados após `NOTIFICATION_RETENTION_DAYS` (30) ou no `user.deleted` |
+| `deleted_users.user_id` (só o UUID) | Postgres `fiapx_notification` | notification-service | Não mandar e-mail para quem já excluiu a conta (evento atrasado) | `NOTIFICATION_RETENTION_DAYS` (30) |
 | IP do cliente | Redis (chave com hash SHA-256, TTL de 1 min a 1 h) | video-api (throttling) | Limitar tentativas de login/cadastro/upload | Expira sozinho (TTL) |
-| Logs | stdout → Loki | todos os serviços | Operação e diagnóstico, só com IDs | 72 h |
+| Logs | stdout → Loki | todos os serviços | Operação e diagnóstico, só com IDs | 72 h no Loki. Os arquivos de log dos containers no nó (kubelet) giram por tamanho, não por tempo (3 × 10 MiB por container): em pouco uso duram mais, mas também só têm IDs |
 | Métricas | Prometheus | todos os serviços | SLOs e alertas; **nenhum label com dado pessoal** | 3 dias |
 
 O nome enviado pelo usuário **nunca vira caminho no storage** (as chaves só têm UUIDs); ele só
@@ -52,17 +53,19 @@ aparece, codificado (RFC 5987), no `Content-Disposition` do download.
 | Regra | Como é aplicada | Código |
 |---|---|---|
 | Vídeo original apagado no fim do processamento | Os consumidores de `api.video-processing` e `api.video-deadletter` apagam o objeto de `fiapx-raw` **depois do commit** que leva o vídeo a COMPLETED/FAILED. Falha no storage vira `RetryableError`: a mensagem volta pela `.retry.N` e o DELETE (idempotente) roda de novo. | `modules/videos/application/raw-video.cleanup.ts`, `use-cases/apply-processing-event.use-case.ts`, `use-cases/handle-dead-letter.use-case.ts` |
+| Sobras de upload (rede de segurança) | No job horário, com advisory lock: original de vídeo já COMPLETED/FAILED → apagado; original **sem linha no banco** há mais de 1 h (upload cuja transação não completou) → apagado; upload multipart interrompido há mais de 1 h (as partes não aparecem como objeto) → abortado, nos dois buckets. Vídeos ainda na fila ou processando ficam. | `modules/privacy/application/use-cases/purge-leftover-uploads.use-case.ts` |
+| Mensagens nas filas mortas | Operator policy `fiapx-dlq-limits` no RabbitMQ (Job `rabbitmq-init`): `message-ttl` de 7 dias e 64 MiB por DLQ. O runbook manda purgar `worker.video-uploaded.dlq` (o vídeo já é FAILED) e re-enviar as outras. | `infra/k8s/base/data/rabbitmq/rabbitmq-init.mjs`, `docs/observabilidade.md` (`FiapxDlqNotEmpty`) |
 | Zip por `ZIP_RETENTION_DAYS` (7) | Job **a cada hora** (`DATA_RETENTION_INTERVAL_S`, padrão 3600; registrado no `SchedulerRegistry` do `@nestjs/schedule`) dentro de uma transação com `pg_try_advisory_xact_lock` (uma réplica por vez): apaga o zip, grava `zip_key = NULL` e `expired_at = now()`. Download ou pedido de link depois disso → `410 V0006 ZIP_EXPIRED`. O BDD sobe o stack com `ZIP_RETENTION_DAYS=0.0005` (~43 s) e `DATA_RETENTION_INTERVAL_S=10` para provar a expiração de ponta a ponta. | `modules/videos/application/use-cases/expire-zips.use-case.ts`, `modules/privacy/interfaces/jobs/data-retention.job.ts` |
 | Registros de entrega | No mesmo job: linhas publicadas do outbox com mais de 7 dias (os payloads têm e-mail e nome) e `processed_messages` com mais de 14 dias. | `modules/privacy/application/use-cases/purge-delivery-records.use-case.ts` |
 | Objetos órfãos | No mesmo job, com advisory lock: prefixos `{userId}/` cujo usuário não existe mais são apagados nos dois buckets (rede de segurança da eliminação). | `modules/privacy/application/use-cases/purge-orphan-objects.use-case.ts` |
-| Notificações | Job diário (03:00, `pg_try_advisory_xact_lock`) no notification-service: `recipient = 'removido'`, `payload = '{}'` após `NOTIFICATION_RETENTION_DAYS` (30). | `apps/notification-service/src/modules/notifications/application/use-cases/apply-notification-retention.use-case.ts`, `interfaces/jobs/notification-retention.job.ts` |
+| Notificações | Job diário (03:00, `pg_try_advisory_xact_lock`) no notification-service: `recipient = 'removido'`, `payload = '{}'` após `NOTIFICATION_RETENTION_DAYS` (30); linhas de `deleted_users` com a mesma idade saem. | `apps/notification-service/src/modules/notifications/application/use-cases/apply-notification-retention.use-case.ts`, `interfaces/jobs/notification-retention.job.ts` |
 | Logs | 72 h no Loki; sem dado pessoal (seção 6). | `infra/k8s/observability/` |
 
 ## 4. Direitos do titular (art. 18) e como cada um é atendido
 
 | Direito | Como o usuário exerce | Implementação |
 |---|---|---|
-| Confirmação e **acesso** (II) | Tela "Meus dados" → "Baixar meus dados" | `GET /api/me/data` (JWT): JSON com o usuário (sem o hash), todos os vídeos e o histórico de cada um. `Cache-Control: no-store`. `modules/privacy/application/use-cases/export-my-data.use-case.ts` |
+| Confirmação e **acesso** (II) | Tela "Meus dados" → "Baixar meus dados" | `GET /api/me/data` (JWT): JSON com o usuário (sem o hash), todos os vídeos e o histórico de cada um, baixado como `fiap-frames-meus-dados.json`. `Cache-Control: no-store`. `modules/privacy/application/use-cases/export-my-data.use-case.ts`. Os registros de envio de e-mail ficam no banco do notification-service e não entram no arquivo: a política explica o que guardam (destinatário, tipo, data, por 30 dias) e o pedido é pelo contato |
 | **Portabilidade** (V) | O mesmo arquivo JSON (formato aberto, legível por máquina) | idem |
 | **Eliminação** (VI) | "Excluir minha conta" + senha | `DELETE /api/me` com `{ "password": "..." }` → `204`. Ver fluxo abaixo. `modules/privacy/application/use-cases/delete-my-account.use-case.ts` |
 | Correção (III) | Pedido pelo contato da política | Atendimento manual (fora do escopo da API) |
@@ -84,12 +87,12 @@ sequenceDiagram
   alt senha errada
     API-->>U: 400 A0004 (a sessão continua válida)
   else senha correta
-    API->>DB: BEGIN; lock do usuário; DELETE history, videos; DELETE outbox do usuário; DELETE users; INSERT outbox user.deleted; COMMIT
+    API->>DB: uma transação: lock do usuário, DELETE history e videos, DELETE outbox do usuário, DELETE users, INSERT outbox user.deleted
     API->>S3: apaga {userId}/ em fiapx-raw e fiapx-zips
     API-->>U: 204
     API->>MQ: relay do outbox publica user.deleted { userId }
     MQ->>N: notification.events
-    N->>N: anonimiza as notificações daquele userId (anonymize-user-notifications.use-case.ts)
+    N->>N: anonimiza as notificações daquele userId e grava o userId em deleted_users (mesma transação)
   end
 ```
 
@@ -103,18 +106,25 @@ sequenceDiagram
   foram apagados); o erro é logado só com o `userId` e a varredura horária de órfãos termina a
   limpeza.
 - **Limite de tentativas**: 5 por minuto por usuário (a rota pede a senha de novo).
+- **Evento atrasado não ressuscita o e-mail**: um `video.failed`/`video.completed` do usuário que
+  chegar ao notification-service **depois** do `user.deleted` (corrida com o prefetch, retry ou
+  redrive de DLQ) encontra o `userId` em `deleted_users` e é descartado sem gravar nem enviar
+  nada. Registro e anonimização são serializados por usuário (`pg_advisory_xact_lock`).
+  Teste: `apps/notification-service/test/notification-service.int-spec.ts` ("LGPD race").
 
 ## 5. Segurança (art. 46)
 
 | Medida | Onde |
 |---|---|
-| TLS ponta a ponta (Cloudflare Full strict → Caddy → cluster) | infra (`infra/vm/`, `infra/k8s/`) |
+| Transporte: TLS do navegador até a Cloudflare e da Cloudflare até o Caddy da VM (regra SSL Full (strict) no endereço oficial `frames.asdevit.com`: a Cloudflare confere o certificado da origem). Do Caddy ao Traefik e aos pods o tráfego é HTTP, mas não sai do host: passa pela bridge docker interna e pela rede dos pods, que a internet não alcança (UFW e a guarda `fiapx-netguard` na tabela raw do iptables). O host técnico `fiapx.asdevit.com` (não divulgado, usado pelo smoke do deploy) está fora da regra: nele a Cloudflare fala HTTP com a VM (`infra/vm/README.md`, pendência P13) | infra (`infra/vm/`, `infra/k8s/`) |
 | bcrypt custo 12; senha de 8 caracteres a 72 bytes; comparação com hash "dummy" para e-mail inexistente (sem oráculo de tempo) | `modules/auth/infrastructure/security/bcrypt-password-hasher.ts`, `application/use-cases/login.use-case.ts` |
 | JWT HS256 de 1 h (`iss`, `aud`, só o `sub`), guard global, rotas públicas explícitas (`@Public()`) | `modules/auth/` |
 | Isolamento por dono: toda consulta filtra por `user_id`; vídeo alheio → `404 V0001` | `modules/videos/infrastructure/persistence/typeorm-video.repository.ts` |
 | Buckets privados; download por link HMAC-SHA256 de 5 min, comparação em tempo constante, `Cache-Control: no-store`, `Referrer-Policy: no-referrer` | `modules/videos/infrastructure/signing/hmac-download.signer.ts`, `interfaces/controllers/downloads.controller.ts` |
 | Upload: extensão + magic bytes, limite `MAX_UPLOAD_MB`, nome do arquivo nunca vira caminho | `modules/videos/domain/video-file.policy.ts`, `interfaces/http/multipart-file.reader.ts` |
-| Throttling em Redis (cadastro 10/h por IP, login 5/min por IP + e-mail, upload 30/min e eliminação 5/min por usuário), com fail-open se o Redis cair. Cadastro, login e upload ajustáveis por `THROTTLE_*_LIMIT` (o compose local folga cadastro e upload para o BDD e o k6) | `shared/infrastructure/throttling/` |
+| Throttling em Redis (cadastro 10/h por IP, login 5/min por IP + e-mail **e** 30/min por IP, upload 30/min e eliminação 5/min por usuário; IPv6 conta por prefixo `/64`), com fail-open se o Redis cair. Cadastro, login e upload ajustáveis por `THROTTLE_*_LIMIT` (o compose local folga cadastro e upload para o BDD e o k6) | `shared/infrastructure/throttling/` |
+| E-mail não vira ferramenta de spam: o cadastro não verifica o e-mail (corte do escopo), então nome e nome de arquivo entram no e-mail sem virar link, o nome do cadastro recusa endereço de site (`://`, `www.`) e há orçamento de 10 e-mails por usuário e 80 no total por dia | `apps/notification-service/src/modules/notifications/application/templates/`, `auth.dto.ts`, `NOTIFICATION_DAILY_LIMIT*` |
+| Readiness pública sem detalhe: `/api/health/ready` responde só `ok`/`unavailable` (hosts e usuário do banco ficam no log) | `modules/health/` |
 | Cabeçalhos de segurança (CSP sem script inline, `frame-ancestors 'none'`, `nosniff`), CORS só para `CORS_ORIGIN` | `apps/video-api/src/app.setup.ts` |
 | Segredos só por variável/arquivo (`<VAR>_FILE`), nenhum padrão de senha no código; Secrets do K8s criptografados em repouso; gitleaks no CI | `libs/common` (`loadConfig`), infra |
 | `/metrics` interno com Bearer; nenhum label com dado pessoal | `libs/observability` |
@@ -155,7 +165,8 @@ conter, avaliar, comunicar à ANPD e aos titulares, registrar).
 |---|---|
 | Aceite obrigatório, eliminação, exportação, token revogado, raw apagado, zip vencido → 410 | `npm run test:e2e` (`apps/video-api/test/video-api.e2e-spec.ts`, containers reais) |
 | Ponta a ponta no stack completo (3 serviços reais): aceite, cadastro concorrente, exportação, eliminação com linhas e objetos apagados e notificações anonimizadas, raw apagado após COMPLETED/FAILED, zip expirado → 410, logs sem dados pessoais | `make test-bdd` (`tests/bdd/features/05-privacidade.feature`, `06-retencao.feature`, `99-logs-sem-dados-pessoais.feature`) |
-| Anonimização no `user.deleted` e retenção de 30 dias das notificações | `npm run test:int` (`apps/notification-service/test/notification-service.int-spec.ts`) |
+| Anonimização no `user.deleted`, evento atrasado descartado (`deleted_users`) e retenção de 30 dias das notificações | `npm run test:int` (`apps/notification-service/test/notification-service.int-spec.ts`) |
+| Sobras de upload apagadas (original sem linha, multipart interrompido) | `npm run test:cov` (`purge-leftover-uploads.use-case.spec.ts`, `s3-user-object.store.spec.ts`) |
 | Regras unitárias (máquina de estados, retenção, eliminação em transação) | `npm run test:cov -- apps/video-api` |
 | Mascaramento dos logs | testes de `libs/observability/src/logging/` |
 | Na demo | cadastrar sem aceitar a política; baixar "Meus dados"; excluir a conta e mostrar que o token antigo recebe 401 |

@@ -1,5 +1,6 @@
 import type { QueryRunner } from 'typeorm';
 import { DOWN_STATEMENTS, Init1790553600000, UP_STATEMENTS } from './1790553600000-init';
+import { StatusHistoryIndex1790640000000 } from './1790640000000-status-history-index';
 import { MIGRATIONS } from './index';
 
 function recordingRunner(): { runner: QueryRunner; statements: string[] } {
@@ -16,8 +17,8 @@ function recordingRunner(): { runner: QueryRunner; statements: string[] } {
 const normalize = (sql: string) => sql.replace(/\s+/g, ' ');
 
 describe('Init1790553600000 (contratos.md, sections 5 and 12)', () => {
-  it('is the only migration and is listed explicitly (no glob)', () => {
-    expect(MIGRATIONS).toEqual([Init1790553600000]);
+  it('is the first migration and every migration is listed explicitly (no glob)', () => {
+    expect(MIGRATIONS).toEqual([Init1790553600000, StatusHistoryIndex1790640000000]);
     expect(new Init1790553600000().name).toBe('Init1790553600000');
   });
 

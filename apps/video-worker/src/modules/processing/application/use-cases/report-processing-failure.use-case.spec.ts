@@ -36,6 +36,24 @@ describe('ReportProcessingFailureUseCase', () => {
     ]);
   });
 
+  it('publishes nothing for an abandoned delivery (the redelivered copy reports it)', async () => {
+    const publisher = new RecordingEventPublisher();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      new ReportProcessingFailureUseCase(publisher).execute({
+        messageId: videoUploadedFixture.id,
+        correlationId: 'cid',
+        retryCount: 0,
+        videoId: VIDEO_ID,
+        error: ProcessingErrors.NO_FRAMES().appError,
+        signal: controller.signal,
+      }),
+    ).rejects.toBeDefined();
+    expect(publisher.events).toEqual([]);
+  });
+
   it('truncates the message to the contract limit (500)', async () => {
     const publisher = new RecordingEventPublisher();
     const long = new AppError(422, 'X', 'P0001', 'x'.repeat(800));

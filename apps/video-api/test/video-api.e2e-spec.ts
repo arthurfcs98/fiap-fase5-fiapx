@@ -99,6 +99,7 @@ describe('video-api (e2e with Postgres, Redis, RabbitMQ and Garage)', () => {
     // Same one-shot the K8s Job / compose service runs (idempotent: the second run is a no-op).
     await expect(runMigrationCli({ env, write: () => undefined })).resolves.toEqual([
       'Init1790553600000',
+      'StatusHistoryIndex1790640000000',
     ]);
     await expect(runMigrationCli({ env, write: () => undefined })).resolves.toEqual([]);
 
@@ -242,11 +243,9 @@ describe('video-api (e2e with Postgres, Redis, RabbitMQ and Garage)', () => {
     const live = await http().get('/api/health/live').expect(200);
     expect(live.body).toEqual({ status: 'ok', service: 'video-api', version: 'e2e-sha1234' });
 
+    // Public route: only up/down, never the checks' details (hosts, database user).
     const ready = await http().get('/api/health/ready').expect(200);
-    expect(ready.body).toMatchObject({
-      status: 'ok',
-      info: { database: { status: 'up' }, storage: { status: 'up' } },
-    });
+    expect(ready.body).toEqual({ status: 'ok', service: 'video-api', version: 'e2e-sha1234' });
   });
 
   it('serves the static frontend at / and keeps /api for the API', async () => {

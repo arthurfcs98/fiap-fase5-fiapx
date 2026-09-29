@@ -7,9 +7,6 @@ export const PROCESSING_SETTINGS = Symbol('PROCESSING_SETTINGS');
 /** ffprobe only reads headers: 30 s is plenty even under CPU contention. */
 export const FFPROBE_TIMEOUT_MS = 30_000;
 
-/** Minimum age before the startup sweep removes a leftover work directory. */
-export const MIN_STALE_WORK_DIR_MS = 60 * 60 * 1000;
-
 /** `workerId` limit of `video.processing.started`. */
 const WORKER_ID_MAX_LENGTH = 100;
 
@@ -20,12 +17,37 @@ export interface ProcessingSettings {
   ffmpegTimeoutMs: number;
   ffprobeTimeoutMs: number;
   maxVideoDurationS: number;
-  /** Work directories older than this are leftovers of a dead process. */
+  /** Most bytes of frames one video may put on the work disk (`MAX_FRAMES_MB`). */
+  maxFramesBytes: number;
+  /**
+   * Age from which the startup sweep removes job folders. `WORK_DIR` is private to the replica
+   * (contratos.md, section 15: tmpfs/emptyDir per replica, never a shared volume) and nothing
+   * runs before the sweep, so everything found at boot is a leftover of the previous process
+   * (e.g. frames of a job killed by OOM): 0 = remove all.
+   */
   staleWorkDirMs: number;
+  /** How long SIGTERM waits for the job in progress (see {@link shutdownTimeoutMsFor}). */
+  shutdownTimeoutMs: number;
+}
+
+/** Download, zip upload and publish on top of ffprobe + ffmpeg (worst case, no contention). */
+export const SHUTDOWN_TRANSFER_MARGIN_MS = 60_000;
+
+/**
+ * SIGTERM waits for the whole job in progress (contratos.md, section 9): ffprobe + ffmpeg at
+ * their time budgets plus the transfers. `terminationGracePeriodSeconds` (K8s) and
+ * `stop_grace_period` (compose) must be larger (720 s with the defaults: 30 + 600 + 60 = 690 s).
+ */
+export function shutdownTimeoutMsFor(config: Pick<WorkerConfig, 'FFMPEG_TIMEOUT_MS'>): number {
+  return (
+    Math.min(FFPROBE_TIMEOUT_MS, config.FFMPEG_TIMEOUT_MS) +
+    config.FFMPEG_TIMEOUT_MS +
+    SHUTDOWN_TRANSFER_MARGIN_MS
+  );
 }
 
 export function processingSettingsFromConfig(
-  config: Pick<WorkerConfig, 'FFMPEG_TIMEOUT_MS' | 'MAX_VIDEO_DURATION_S'>,
+  config: Pick<WorkerConfig, 'FFMPEG_TIMEOUT_MS' | 'MAX_VIDEO_DURATION_S' | 'MAX_FRAMES_MB'>,
   host: string = hostname(),
 ): ProcessingSettings {
   const workerId = host.trim().slice(0, WORKER_ID_MAX_LENGTH);
@@ -34,7 +56,8 @@ export function processingSettingsFromConfig(
     ffmpegTimeoutMs: config.FFMPEG_TIMEOUT_MS,
     ffprobeTimeoutMs: Math.min(FFPROBE_TIMEOUT_MS, config.FFMPEG_TIMEOUT_MS),
     maxVideoDurationS: config.MAX_VIDEO_DURATION_S,
-    // A live job never gets this old: ffmpeg is killed at FFMPEG_TIMEOUT_MS.
-    staleWorkDirMs: Math.max(MIN_STALE_WORK_DIR_MS, 2 * config.FFMPEG_TIMEOUT_MS),
+    maxFramesBytes: config.MAX_FRAMES_MB * 1024 * 1024,
+    staleWorkDirMs: 0,
+    shutdownTimeoutMs: shutdownTimeoutMsFor(config),
   };
 }

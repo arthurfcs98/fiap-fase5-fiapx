@@ -115,6 +115,8 @@ export interface StartedGarage extends StartedDependency {
   accessKeyId: string;
   secretAccessKey: string;
   buckets: { raw: string; zips: string };
+  /** Quota de tamanho do bucket pela API admin (como o garage-init do K8s); `null` remove. */
+  setBucketQuota(bucket: string, maxSizeBytes: number | null): Promise<void>;
 }
 
 /**
@@ -155,6 +157,21 @@ export async function startGarage(): Promise<StartedGarage> {
     timeout: 120_000,
   });
 
+  const adminUrl = `http://${host}:${container.getMappedPort(3903)}`;
+  const admin = async (method: string, route: string, body?: unknown): Promise<unknown> => {
+    const response = await fetch(`${adminUrl}${route}`, {
+      method,
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+        ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(`Garage admin ${route}: HTTP ${response.status}`);
+    const text = await response.text();
+    return text ? (JSON.parse(text) as unknown) : undefined;
+  };
+
   return {
     container,
     endpoint: `http://${host}:${container.getMappedPort(3900)}`,
@@ -162,6 +179,15 @@ export async function startGarage(): Promise<StartedGarage> {
     accessKeyId,
     secretAccessKey,
     buckets,
+    setBucketQuota: async (bucket, maxSizeBytes) => {
+      const info = (await admin(
+        'GET',
+        `/v2/GetBucketInfo?globalAlias=${encodeURIComponent(bucket)}`,
+      )) as { id: string };
+      await admin('POST', `/v2/UpdateBucket?id=${encodeURIComponent(info.id)}`, {
+        quotas: { maxSize: maxSizeBytes, maxObjects: null },
+      });
+    },
     stop: async () => {
       await container.stop();
     },

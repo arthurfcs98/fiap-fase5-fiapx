@@ -1,5 +1,5 @@
 # =============================================================================
-# FIAP X — stack local (dev) e do CI (E2E/smoke).
+# FIAP Frames — stack local (dev) e do CI (E2E/smoke).
 #
 #   make up        # gera o .env (segredos locais) e sobe tudo com build: docker compose up --wait
 #   make up WORKERS=3                              # idem, com 3 réplicas do video-worker
@@ -152,6 +152,8 @@ services:
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?rode scripts/dev-secrets.sh}
     volumes:
       - rabbitmq:/var/lib/rabbitmq
+      # + shovel: "Move messages" no management, para o redrive das DLQs (infra/rabbitmq/README.md).
+      - ./infra/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     ports:
       - "127.0.0.1:${RABBITMQ_HOST_PORT:-5672}:5672"
       - "127.0.0.1:${RABBITMQ_UI_HOST_PORT:-15672}:15672"
@@ -275,7 +277,12 @@ services:
       # stack local/CI (BDD e k6 cadastram muitos usuários do mesmo IP). Produção usa o padrão.
       THROTTLE_REGISTER_LIMIT: ${THROTTLE_REGISTER_LIMIT:-1000}
       THROTTLE_LOGIN_LIMIT: ${THROTTLE_LOGIN_LIMIT:-5}
+      THROTTLE_LOGIN_IP_LIMIT: ${THROTTLE_LOGIN_IP_LIMIT:-1000}
       THROTTLE_UPLOAD_LIMIT: ${THROTTLE_UPLOAD_LIMIT:-600}
+      # Proteções de capacidade (contratos.md, seções 8 e 10). Folgadas aqui: o BDD manda 15
+      # vídeos de um usuário ao mesmo tempo e o k6 dezenas. Produção usa os padrões (8 e 5).
+      MAX_CONCURRENT_UPLOADS: ${MAX_CONCURRENT_UPLOADS:-64}
+      MAX_PENDING_VIDEOS_PER_USER: ${MAX_PENDING_VIDEOS_PER_USER:-1000}
     ports:
       - "127.0.0.1:${API_HOST_PORT:-8080}:3000"
     depends_on:
@@ -316,8 +323,11 @@ services:
       WORK_DIR: /work
       FFMPEG_TIMEOUT_MS: "600000"
       MAX_VIDEO_DURATION_S: "600"
-    # Termina o vídeo em andamento antes de sair (SHUTDOWN_GRACE_MS=300s + folga, na E4).
-    stop_grace_period: 330s
+      # Frames de um vídeo no /work (tmpfs de 1 GiB); acima, ffmpeg para e o vídeo falha com P0006.
+      MAX_FRAMES_MB: "900"
+    # Termina o vídeo em andamento antes de sair: o shutdown espera ffprobe + ffmpeg nos seus
+    # tempos máximos + transferências (30 + 600 + 60 = 690 s); o grace precisa ser maior.
+    stop_grace_period: 720s
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -346,6 +356,10 @@ services:
       # Link dos e-mails (a página do app) e retenção LGPD das notificações (seção 12).
       PUBLIC_BASE_URL: http://localhost:${API_HOST_PORT:-8080}
       NOTIFICATION_RETENTION_DAYS: "30"
+      # Orçamento diário de e-mails (anti-abuso). Folgado aqui (BDD e k6 mandam centenas para o
+      # Mailpit); produção usa os padrões (10 por usuário, 80 no total).
+      NOTIFICATION_DAILY_LIMIT_PER_USER: ${NOTIFICATION_DAILY_LIMIT_PER_USER:-100000}
+      NOTIFICATION_DAILY_LIMIT: ${NOTIFICATION_DAILY_LIMIT:-100000}
     depends_on:
       postgres:
         condition: service_healthy

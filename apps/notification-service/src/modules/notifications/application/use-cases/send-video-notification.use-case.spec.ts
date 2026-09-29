@@ -1,4 +1,4 @@
-import { RetryableError } from '@fiapx/common';
+import { DependencyUnavailableError, RetryableError } from '@fiapx/common';
 import { videoCompletedFixture, videoFailedFixture } from '@fiapx/contracts/fixtures';
 import { Logger } from '@nestjs/common';
 import { EmailRejectedError } from '../../domain/email-rejected.error';
@@ -11,6 +11,8 @@ import type {
 import type {
   DeliveryStep,
   INotificationRepository,
+  NotificationCounts,
+  RegisterOutcome,
 } from '../../domain/ports/notification.repository';
 import type { NotificationSettings } from '../notification.settings';
 import type { VideoNotificationCommand } from './send-video-notification.use-case';
@@ -22,11 +24,27 @@ import {
 /** In-memory repository with the same contract (the SQL is covered by the integration test). */
 class FakeNotificationRepository implements INotificationRepository {
   readonly rows = new Map<string, Notification>();
+  readonly deletedUsers = new Set<string>();
+  /** Notifications of other users/videos in the last 24 h (budget). */
+  extraCounts: NotificationCounts = { user: 0, total: 0 };
   registerFailure?: Error;
 
-  registerIfAbsent(notification: NewNotification): Promise<boolean> {
+  isRegistered(dedupKey: string): Promise<boolean> {
+    return Promise.resolve(this.rows.has(dedupKey));
+  }
+
+  countCreatedSince(_since: Date, userId: string): Promise<NotificationCounts> {
+    const rows = [...this.rows.values()];
+    return Promise.resolve({
+      user: this.extraCounts.user + rows.filter((row) => row.userId === userId).length,
+      total: this.extraCounts.total + rows.length,
+    });
+  }
+
+  registerIfAbsent(notification: NewNotification): Promise<RegisterOutcome> {
     if (this.registerFailure) return Promise.reject(this.registerFailure);
-    if (this.rows.has(notification.dedupKey)) return Promise.resolve(false);
+    if (this.rows.has(notification.dedupKey)) return Promise.resolve('exists');
+    if (this.deletedUsers.has(notification.userId)) return Promise.resolve('user-deleted');
     this.rows.set(notification.dedupKey, {
       ...notification,
       status: 'PENDING',
@@ -36,7 +54,7 @@ class FakeNotificationRepository implements INotificationRepository {
       createdAt: new Date(),
       sentAt: null,
     });
-    return Promise.resolve(true);
+    return Promise.resolve('created');
   }
 
   async deliverExclusively<T>(
@@ -112,6 +130,8 @@ const SETTINGS: NotificationSettings = {
   publicBaseUrl: 'https://fiapx.asdevit.com',
   notifyOnSuccess: true,
   retentionDays: 30,
+  dailyLimitPerUser: 10,
+  dailyLimit: 80,
 };
 
 const FAILED: VideoNotificationCommand = {
@@ -177,8 +197,8 @@ describe('SendVideoNotificationUseCase', () => {
       lastError: null,
       payload: {
         videoId: videoFailedFixture.payload.videoId,
-        userName: 'Arthur',
-        originalName: 'demo.mp4',
+        userName: videoFailedFixture.payload.userName,
+        originalName: videoFailedFixture.payload.originalName,
         errorCode: 'P0001',
         errorMessage: videoFailedFixture.payload.errorMessage,
       },
@@ -362,5 +382,56 @@ describe('SendVideoNotificationUseCase', () => {
     await expect(useCase().execute(FAILED)).rejects.toThrow('connection terminated');
     expect(sender.sent).toHaveLength(0);
     expect(metrics.recorded).toEqual([]);
+  });
+
+  describe('e-mail budget (unverified sign-up addresses: anti-abuse)', () => {
+    it('skips a NEW notification beyond the per-user daily limit (nothing stored)', async () => {
+      repository.extraCounts = { user: 10, total: 10 };
+
+      await expect(useCase().execute(FAILED)).resolves.toBe('BUDGET_EXCEEDED');
+
+      expect(repository.rows.size).toBe(0);
+      expect(sender.sent).toHaveLength(0);
+      expect(metrics.recorded).toEqual(['VIDEO_FAILED:SKIPPED']);
+      expect(logged).toContainEqual([expect.objectContaining({ scope: 'user' })]);
+    });
+
+    it('skips beyond the global daily limit, below the provider quota', async () => {
+      repository.extraCounts = { user: 0, total: 80 };
+
+      await expect(useCase().execute(FAILED)).resolves.toBe('BUDGET_EXCEEDED');
+      expect(logged).toContainEqual([expect.objectContaining({ scope: 'global' })]);
+    });
+
+    it('a redelivery of an already registered notification is not blocked by the budget', async () => {
+      sender.failNext(new RetryableError('timeout'));
+      await expect(useCase().execute(FAILED)).rejects.toThrow(RetryableError);
+      repository.extraCounts = { user: 50, total: 500 };
+
+      await expect(useCase().execute(FAILED)).resolves.toBe('SENT');
+    });
+  });
+
+  it('never stores nor sends for a user already deleted (user.deleted consumed first)', async () => {
+    repository.deletedUsers.add(videoFailedFixture.payload.userId);
+
+    await expect(useCase().execute(FAILED)).resolves.toBe('RECIPIENT_REMOVED');
+
+    expect(repository.rows.size).toBe(0);
+    expect(sender.sent).toHaveLength(0);
+    expect(metrics.recorded).toEqual(['VIDEO_FAILED:SKIPPED']);
+  });
+
+  it('provider outage: stays PENDING even on the "last" attempt and pauses the consumer', async () => {
+    sender.failNext(new DependencyUnavailableError('resend', { detail: 'rate_limit (429)' }));
+
+    const failure = useCase().execute({ ...FAILED, finalAttempt: true });
+
+    await expect(failure).rejects.toBeInstanceOf(DependencyUnavailableError);
+    expect(repository.only()).toMatchObject({
+      status: 'PENDING',
+      lastError: 'DEPENDENCY_UNAVAILABLE (resend): rate_limit (429)',
+    });
+    expect(metrics.recorded).toEqual(['VIDEO_FAILED:RETRY']);
   });
 });

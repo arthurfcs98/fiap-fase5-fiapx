@@ -1,12 +1,16 @@
 import type { ExecutionContext } from '@nestjs/common';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
-import { ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerException, ThrottlerGuard } from '@nestjs/throttler';
 import type { ThrottleName } from './throttle';
 import {
+  AppThrottlerGuard,
+  buildLoginIpThrottler,
   buildThrottler,
   clientIp,
+  DEFAULT_LOGIN_IP_LIMIT,
   DEFAULT_THROTTLE_LIMITS,
   ipTracker,
+  loginIpTracker,
   loginTracker,
   THROTTLE_WINDOWS_MS,
   ThrottleBy,
@@ -36,6 +40,19 @@ describe('throttle trackers and policies', () => {
     expect(clientIp({ ip: '203.0.113.9' })).toBe('203.0.113.9');
     expect(clientIp({ socket: { remoteAddress: '10.0.0.1' } })).toBe('10.0.0.1');
     expect(clientIp({})).toBe('unknown');
+  });
+
+  it('clientIp groups IPv6 by /64 (one subscriber cannot rotate 2^64 addresses)', () => {
+    expect(clientIp({ ip: '2001:db8:1:2:aaaa::1' })).toBe('2001:db8:1:2::/64');
+    expect(clientIp({ ip: '2001:db8:1:2:ffff:ffff:ffff:ffff' })).toBe('2001:db8:1:2::/64');
+    expect(clientIp({ ip: '::ffff:203.0.113.9' })).toBe('203.0.113.9');
+  });
+
+  it('loginIpTracker keys only by IP (second counter of the login route)', () => {
+    expect(DEFAULT_LOGIN_IP_LIMIT).toBe(30);
+    expect(loginIpTracker({ ip: '1.2.3.4', body: { email: 'x@y.z' } }, ctx)).toBe(
+      'loginip:1.2.3.4',
+    );
   });
 
   it('ipTracker keys by IP', () => {
@@ -76,8 +93,46 @@ function decoratedContext(name?: ThrottleName): { context: ExecutionContext; han
 describe('ThrottleBy + buildThrottler', () => {
   it('ThrottleBy adds the guard and tags the route with its family', () => {
     const { handler, context } = decoratedContext('upload');
-    expect(Reflect.getMetadata(GUARDS_METADATA, handler)).toEqual([ThrottlerGuard]);
+    expect(Reflect.getMetadata(GUARDS_METADATA, handler)).toEqual([AppThrottlerGuard]);
+    expect(new AppThrottlerGuard({ throttlers: [] }, {} as never, {} as never)).toBeInstanceOf(
+      ThrottlerGuard,
+    );
     expect(throttleNameOf(context)).toBe('upload');
+  });
+
+  it('loginIp throttler: only the login route, per IP, 1 minute', () => {
+    const throttler = buildLoginIpThrottler(30);
+    expect(throttler).toMatchObject({ name: 'loginIp', limit: 30, ttl: 60_000 });
+    expect(throttler.skipIf?.(decoratedContext('login').context)).toBe(false);
+    expect(throttler.skipIf?.(decoratedContext('upload').context)).toBe(true);
+    expect(throttler.getTracker?.({ ip: '1.2.3.4' }, ctx)).toBe('loginip:1.2.3.4');
+  });
+
+  it('AppThrottlerGuard sets the standard Retry-After whichever throttler blocked', async () => {
+    const guard = new AppThrottlerGuard({ throttlers: [] }, {} as never, {} as never);
+    const header = jest.fn();
+    const context = {
+      switchToHttp: () => ({ getResponse: () => ({ header }) }),
+    } as unknown as ExecutionContext;
+    const detail = {
+      limit: 30,
+      ttl: 60_000,
+      key: 'k',
+      tracker: 't',
+      totalHits: 31,
+      timeToExpire: 42,
+      isBlocked: true,
+      timeToBlockExpire: 41.2,
+    };
+
+    await expect(
+      (
+        guard as unknown as {
+          throwThrottlingException(c: ExecutionContext, d: typeof detail): Promise<void>;
+        }
+      ).throwThrottlingException(context, detail),
+    ).rejects.toBeInstanceOf(ThrottlerException);
+    expect(header).toHaveBeenCalledWith('Retry-After', '42');
   });
 
   it('a guarded route without @ThrottleBy is a programming error', () => {

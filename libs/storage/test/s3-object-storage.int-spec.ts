@@ -10,6 +10,7 @@ import {
   ObjectStorageError,
   rawVideoKey,
   S3ObjectStorage,
+  StorageQuotaExceededError,
   zipKey,
 } from '../src';
 
@@ -136,6 +137,27 @@ describe('S3ObjectStorage com Garage real', () => {
       );
     } finally {
       wrong.destroy();
+    }
+  });
+
+  it('bucket com a quota estourada: StorageQuotaExceededError (Buffer e multipart em stream)', async () => {
+    await garage.setBucketQuota(garage.buckets.zips, 1024);
+    try {
+      const small = storage.putStream({
+        bucket: garage.buckets.zips,
+        key: zipKey(userId, randomUUID()),
+        body: Buffer.alloc(64 * 1024, 1),
+      });
+      await expect(small).rejects.toBeInstanceOf(StorageQuotaExceededError);
+
+      const streamed = storage.putStream({
+        bucket: garage.buckets.zips,
+        key: zipKey(userId, randomUUID()),
+        body: Readable.from(Array.from({ length: 12 }, () => Buffer.alloc(1024 * 1024, 2))),
+      });
+      await expect(streamed).rejects.toBeInstanceOf(StorageQuotaExceededError);
+    } finally {
+      await garage.setBucketQuota(garage.buckets.zips, null);
     }
   });
 });

@@ -22,6 +22,8 @@ function setup(objects: Partial<UserObjectStore> = {}) {
   const store: UserObjectStore = {
     listOwnerIds: jest.fn().mockResolvedValue([]),
     deleteAllOf: jest.fn((bucket: string) => Promise.resolve(bucket === 'fiapx-raw' ? 1 : 2)),
+    listObjects: jest.fn().mockResolvedValue([]),
+    abortIncompleteUploads: jest.fn().mockResolvedValue(0),
     ...objects,
   };
   const useCase = new DeleteMyAccountUseCase(

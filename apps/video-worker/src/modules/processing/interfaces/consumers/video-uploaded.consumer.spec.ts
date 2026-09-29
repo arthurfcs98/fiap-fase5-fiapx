@@ -60,15 +60,15 @@ describe('VideoUploadedConsumer', () => {
   it('hands the payload, message id, correlation id and retry count to the use case', async () => {
     const { consumer, processVideo } = setup(completed);
 
-    await consumer
-      .definition()
-      .handle(videoUploadedFixture, messageContext(videoUploadedFixture, { retryCount: 2 }));
+    const context = messageContext(videoUploadedFixture, { retryCount: 2 });
+    await consumer.definition().handle(videoUploadedFixture, context);
 
     expect(processVideo.execute).toHaveBeenCalledWith({
       messageId: videoUploadedFixture.id,
       correlationId: videoUploadedFixture.correlationId,
       retryCount: 2,
       video: videoUploadedFixture.payload,
+      signal: context.signal,
     });
   });
 

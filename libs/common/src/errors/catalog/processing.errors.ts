@@ -2,6 +2,22 @@ import { AppError } from '../app-error';
 import { NonRetryableError } from '../processing-errors';
 
 /**
+ * Todos os códigos P do catálogo (ex.: séries de métricas criadas em 0 no boot, para o
+ * `increase()` do SLO enxergar a primeira falha de cada código).
+ */
+export const PROCESSING_ERROR_CODES = [
+  'P0001',
+  'P0002',
+  'P0003',
+  'P0004',
+  'P0005',
+  'P0006',
+  'P0007',
+  'P0098',
+  'P0099',
+] as const;
+
+/**
  * Prefixo P: falhas de processamento, gravadas em `videos.error_code` (contratos.md, seção 4).
  * Não são respostas HTTP diretas: viram {@link NonRetryableError} no worker/consumidores
  * (422 é só o status semântico caso algum dia sejam expostas).
@@ -35,6 +51,31 @@ export class ProcessingErrors {
 
   static SOURCE_NOT_FOUND(): NonRetryableError {
     return failure('SOURCE_NOT_FOUND', 'P0005', 'O vídeo original não foi encontrado no storage.');
+  }
+
+  /**
+   * Os frames do vídeo não cabem no disco de trabalho do worker (ENOSPC). Depende do vídeo
+   * (resolução, duração, conteúdo): repetir não adianta, então não gasta retries.
+   */
+  static OUTPUT_TOO_LARGE(detail?: string): NonRetryableError {
+    return failure(
+      'OUTPUT_TOO_LARGE',
+      'P0006',
+      'Os frames deste vídeo passam do espaço de processamento disponível. Envie um vídeo mais curto ou de menor resolução.',
+      detail ? { detail } : {},
+    );
+  }
+
+  /**
+   * O bucket dos zips atingiu a quota: é capacidade do sistema (conta no SLO do pipeline), mas
+   * repetir em minutos não resolve (a retenção libera espaço em horas/dias).
+   */
+  static STORAGE_FULL(): NonRetryableError {
+    return failure(
+      'STORAGE_FULL',
+      'P0007',
+      'O armazenamento dos resultados está cheio no momento. Tente enviar o vídeo mais tarde.',
+    );
   }
 
   static RETRIES_EXHAUSTED(attempts: number): NonRetryableError {

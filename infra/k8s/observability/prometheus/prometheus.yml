@@ -1,5 +1,5 @@
 # =============================================================================
-# Prometheus do FIAP X (contratos.md, seção 13). Descobre os alvos sozinho pela API do
+# Prometheus do FIAP Frames (contratos.md, seção 13). Descobre os alvos sozinho pela API do
 # Kubernetes (kubernetes_sd), SÓ no namespace fiapx, pelas anotações dos pods:
 #
 #   prometheus.io/scrape: "true"      entra na coleta

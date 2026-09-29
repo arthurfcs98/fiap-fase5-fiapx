@@ -40,4 +40,13 @@ describe('JwtAuthGuard', () => {
     expect(() => guard.handleRequest(fromStrategy, false)).toThrow(fromStrategy);
     expect(guard.handleRequest(null, { id: 'u1' })).toEqual({ id: 'u1' });
   });
+
+  it('a connectivity error while validating → 503 X0003 (never a 401 that logs the user out)', () => {
+    const guard = new JwtAuthGuard(new Reflector());
+    const refused = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+
+    expect(() => guard.handleRequest(refused, false)).toThrow(
+      expect.objectContaining({ appError: expect.objectContaining({ code: 'X0003' }) }),
+    );
+  });
 });

@@ -1,5 +1,7 @@
 import { AppError } from './app-error';
 import {
+  DependencyUnavailableError,
+  isDependencyUnavailableError,
   isNonRetryableError,
   isRetryableError,
   NonRetryableError,
@@ -17,6 +19,25 @@ describe('RetryableError', () => {
     expect(error.name).toBe('RetryableError');
     expect(error.cause).toBe(cause);
     expect(isRetryableError(error)).toBe(true);
+  });
+});
+
+describe('DependencyUnavailableError', () => {
+  it('é transitório, identifica a dependência e preserva a causa', () => {
+    const cause = new Error('ECONNREFUSED');
+    const error = new DependencyUnavailableError('postgres', { cause });
+
+    expect(error).toBeInstanceOf(RetryableError);
+    expect(error.retryable).toBe(true);
+    expect(error.dependency).toBe('postgres');
+    expect(error.reason).toBe('DEPENDENCY_UNAVAILABLE (postgres)');
+    expect(error.name).toBe('DependencyUnavailableError');
+    expect(error.cause).toBe(cause);
+    expect(isDependencyUnavailableError(error)).toBe(true);
+    expect(isDependencyUnavailableError(new RetryableError('x'))).toBe(false);
+    expect(new DependencyUnavailableError('smtp', { detail: 'ECONNREFUSED' }).reason).toBe(
+      'DEPENDENCY_UNAVAILABLE (smtp): ECONNREFUSED',
+    );
   });
 });
 

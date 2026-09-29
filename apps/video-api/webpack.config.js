@@ -1,6 +1,8 @@
 /**
  * Webpack of the video-api (Nest CLI, `nest build video-api`). On top of the CLI defaults:
- * - two entries: `main.js` (API) and `migrate.js` (one-shot migrations, K8s Job/compose);
+ * - three entries: `main.js` (API), `migrate.js` (one-shot migrations, K8s Job/compose) and
+ *   `setup-topology.js` (one-shot RabbitMQ topology, first container of the K8s Job
+ *   `rabbitmq-init`);
  * - copies `apps/video-api/public` (static frontend) to `dist/apps/video-api/public`, the folder
  *   the Dockerfile ships next to the bundle.
  */
@@ -26,6 +28,7 @@ module.exports = (options) => ({
   entry: {
     main: options.entry,
     migrate: path.join(APP_DIR, 'src', 'migrate.ts'),
+    'setup-topology': path.join(APP_DIR, 'src', 'setup-topology.ts'),
   },
   output: {
     ...options.output,

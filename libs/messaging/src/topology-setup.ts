@@ -127,6 +127,25 @@ export class TopologyInitializer {
     this.retryTimer = undefined;
   }
 
+  /**
+   * Declara a topologia AGORA na conexão atual (ex.: um consumer foi cancelado pelo broker porque
+   * a fila foi apagada e recriada). Rejeita sem conexão ou se a declaração falhar; sem topologia
+   * configurada, não faz nada.
+   */
+  async redeclare(): Promise<void> {
+    const topology = this.topology;
+    if (!topology) return;
+    const connection = this.connection.currentConnection;
+    if (!connection) throw new Error('RabbitMQ desconectado: topologia não declarada');
+    const channel = await connection.createChannel();
+    channel.on('error', ignore);
+    try {
+      await assertTopology(channel, topology);
+    } finally {
+      await channel.close().catch(ignore);
+    }
+  }
+
   private async declare(connection: ChannelModel, topology: Topology): Promise<void> {
     try {
       const channel = await connection.createChannel();

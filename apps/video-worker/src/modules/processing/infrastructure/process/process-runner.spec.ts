@@ -59,8 +59,44 @@ describe('ProcessRunner', () => {
       timeoutMs: 200,
     });
 
-    expect(result).toMatchObject({ timedOut: true, signal: 'SIGKILL', exitCode: null });
+    expect(result).toMatchObject({
+      timedOut: true,
+      aborted: false,
+      signal: 'SIGKILL',
+      exitCode: null,
+    });
     expect(runner.runningCount).toBe(0);
+  });
+
+  it('kills the process when the caller aborts (delivery abandoned): aborted, not timedOut', async () => {
+    const controller = new AbortController();
+    const running = runner.run(NODE, script('setTimeout(() => {}, 30000)'), {
+      timeoutMs: 30_000,
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 100);
+
+    const result = await running;
+
+    expect(result).toMatchObject({
+      aborted: true,
+      timedOut: false,
+      signal: 'SIGKILL',
+      exitCode: null,
+    });
+    expect(runner.runningCount).toBe(0);
+  });
+
+  it('an already aborted caller signal kills the process right away', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await runner.run(NODE, script('setTimeout(() => {}, 30000)'), {
+      timeoutMs: 30_000,
+      signal: controller.signal,
+    });
+
+    expect(result).toMatchObject({ aborted: true, signal: 'SIGKILL' });
   });
 
   it('reports a signal it did not send (e.g. OOM killer) without timedOut', async () => {

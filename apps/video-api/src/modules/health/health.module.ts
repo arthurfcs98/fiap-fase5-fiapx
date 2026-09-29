@@ -2,9 +2,10 @@ import type { IObjectStorage, StorageBuckets } from '@fiapx/storage';
 import { OBJECT_STORAGE, STORAGE_BUCKETS } from '@fiapx/storage';
 import { Module } from '@nestjs/common';
 import type { HealthIndicatorFunction } from '@nestjs/terminus';
-import { HealthIndicatorService, TerminusModule } from '@nestjs/terminus';
+import { HealthCheckService, HealthIndicatorService, TerminusModule } from '@nestjs/terminus';
 import { DataSource } from 'typeorm';
 import { READINESS_CHECKS } from './health.constants';
+import { CACHED_READINESS, CachedReadiness } from './infrastructure/cached-readiness';
 import { checkDatabase, checkStorage } from './infrastructure/dependency-health.indicators';
 import { HealthController } from './interfaces/controllers/health.controller';
 
@@ -24,6 +25,12 @@ import { HealthController } from './interfaces/controllers/health.controller';
         () => checkDatabase(indicator, dataSource),
         () => checkStorage(indicator, storage, buckets),
       ],
+    },
+    {
+      provide: CACHED_READINESS,
+      inject: [HealthCheckService, READINESS_CHECKS],
+      useFactory: (health: HealthCheckService, checks: HealthIndicatorFunction[]) =>
+        new CachedReadiness(() => health.check(checks)),
     },
   ],
 })
