@@ -360,7 +360,7 @@ else
   info "Ele NÃO sobrescreve o /usr/bin/ctr do Docker (pula comandos que já existem no PATH)."
   if (( APPLY )); then
     install -d -m 0700 "$STATE_DIR"
-    curl -sfL --retry 3 -o "$inst" "$INSTALLER_URL" || die "download do instalador falhou: $INSTALLER_URL"
+    curl -sfL --proto '=https' --tlsv1.2 --retry 3 -o "$inst" "$INSTALLER_URL" || die "download do instalador falhou: $INSTALLER_URL"
     info "instalador: $inst (sha256 $(sha256sum "$inst" | cut -c1-16)...)"
   else
     printf '    [dry-run] $ curl -sfL -o %s %s\n' "$inst" "$INSTALLER_URL"

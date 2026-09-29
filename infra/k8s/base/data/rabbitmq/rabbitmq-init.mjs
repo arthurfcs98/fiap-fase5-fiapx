@@ -106,7 +106,12 @@ function positiveInt(name, fallback) {
 }
 
 function log(message) {
-  console.log(`[rabbitmq-init] ${message}`);
+  // Sem quebra de linha nem caractere de controle: uma linha de log não forja outra (log injection).
+  const safe = Array.from(String(message), (ch) => {
+    const code = ch.charCodeAt(0);
+    return code < 32 || code === 127 ? ' ' : ch;
+  }).join('');
+  console.log(`[rabbitmq-init] ${safe}`);
 }
 
 async function api(method, path, body) {

@@ -29,7 +29,7 @@ COPY package.json package-lock.json ./
 # sharing=shared: deps e prod-deps rodam em paralelo no mesmo cache (o cacache do npm é
 # seguro para acesso concorrente).
 RUN --mount=type=cache,target=/root/.npm,sharing=shared \
-    npm ci --no-audit --no-fund
+    npm ci --ignore-scripts --no-audit --no-fund
 
 # ---- build: compila SÓ o app pedido (webpack gera um único dist/apps/$APP/main.js)
 FROM deps AS build
@@ -47,7 +47,7 @@ RUN node_modules/.bin/nest build "$APP"
 FROM base AS prod-deps
 COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm,sharing=shared \
-    npm ci --omit=dev --no-audit --no-fund
+    npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
 # ---- runtime -----------------------------------------------------------------
 FROM base AS runtime

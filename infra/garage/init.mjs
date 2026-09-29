@@ -42,7 +42,12 @@ function required(name) {
 }
 
 function log(message) {
-  console.log(`[garage-init] ${message}`);
+  // Sem quebra de linha nem caractere de controle: uma linha de log não forja outra (log injection).
+  const safe = Array.from(String(message), (ch) => {
+    const code = ch.charCodeAt(0);
+    return code < 32 || code === 127 ? ' ' : ch;
+  }).join('');
+  console.log(`[garage-init] ${safe}`);
 }
 
 class HttpError extends Error {

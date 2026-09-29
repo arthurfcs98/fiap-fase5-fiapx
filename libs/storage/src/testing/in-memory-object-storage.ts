@@ -136,7 +136,8 @@ function describe(object: StoredObject): ObjectMetadata {
 }
 
 function etag(body: Buffer): string {
-  return `"${createHash('md5').update(body).digest('hex')}"`;
+  // MD5 because that is how S3 computes a single-part ETag; not used for any security purpose.
+  return `"${createHash('md5').update(body).digest('hex')}"`; // NOSONAR
 }
 
 function lowerKeys(metadata: Record<string, string> = {}): Record<string, string> {

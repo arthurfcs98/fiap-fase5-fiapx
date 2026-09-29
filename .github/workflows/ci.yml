@@ -48,7 +48,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
@@ -99,7 +99,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       # Cada project roda sozinho: o threshold de 80% vale para ele isoladamente.
       - name: Cobertura (${{ matrix.path }})
         run: npm run test:cov -- ${{ matrix.path }}
@@ -133,7 +133,7 @@ jobs:
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run test:e2e
 
   integration:
@@ -165,7 +165,7 @@ jobs:
         with:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run test:int
 
   security:
@@ -221,7 +221,7 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       # js-yaml (usado pelo check-manifests.mjs) vem das dependências do monorepo.
-      - run: npm ci --no-audit --no-fund
+      - run: npm ci --ignore-scripts --no-audit --no-fund
       # kubectl (kustomize embutido), jq e shellcheck já vêm na imagem ubuntu-24.04 do GitHub.
       - run: infra/k8s/scripts/validate.sh
 
@@ -328,7 +328,7 @@ jobs:
           # O shell ganha do .env no compose e no smoke: sobe e confere a tag deste commit.
           echo "FIAPX_IMAGE_TAG=sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
           echo "APP_VERSION=sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - name: Segredos locais efêmeros (.env)
         run: ./scripts/dev-secrets.sh
       - name: Valida o compose

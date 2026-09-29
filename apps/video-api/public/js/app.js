@@ -39,7 +39,7 @@ const MAX_TIMER_MS = 2_147_483_647;
 
 const notify = (message, tone = 'info') => toast(message, { tone });
 
-const state = { session: null, expiryTimer: null, route: null, loggingOut: false };
+const state = { session: null, expiryTimer: null, route: '', loggingOut: false };
 
 const views = {
   boot: byId('view-boot'),

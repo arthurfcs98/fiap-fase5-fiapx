@@ -53,7 +53,7 @@ defineFeature(feature, (test) => {
     then(
       /^só um é aceito com status 201 e os demais recebem 409 com o código "(.*)"$/,
       (code: string) => {
-        const statuses = responses.map((res) => res.status).sort();
+        const statuses = responses.map((res) => res.status).sort((a, b) => a - b);
         expect(statuses).toEqual([201, ...Array.from({ length: responses.length - 1 }, () => 409)]);
         const conflicts = responses.filter((res) => res.status === 409);
         expect(conflicts.every((res) => errorCode(res) === code)).toBe(true);
