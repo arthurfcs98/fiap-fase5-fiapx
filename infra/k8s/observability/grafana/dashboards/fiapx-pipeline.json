@@ -39,6 +39,117 @@
   "templating": {
     "list": [
       {
+        "type": "custom",
+        "name": "servico",
+        "label": "Serviço",
+        "description": "Serviços cujos logs aparecem no painel Logs.",
+        "query": "video-api,video-worker,notification-service,rabbitmq,postgres,garage,redis",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": [
+            "video-api",
+            "video-worker",
+            "notification-service"
+          ],
+          "value": [
+            "video-api",
+            "video-worker",
+            "notification-service"
+          ]
+        },
+        "options": [
+          {
+            "selected": false,
+            "text": "All",
+            "value": "$__all"
+          },
+          {
+            "selected": true,
+            "text": "video-api",
+            "value": "video-api"
+          },
+          {
+            "selected": true,
+            "text": "video-worker",
+            "value": "video-worker"
+          },
+          {
+            "selected": true,
+            "text": "notification-service",
+            "value": "notification-service"
+          },
+          {
+            "selected": false,
+            "text": "rabbitmq",
+            "value": "rabbitmq"
+          },
+          {
+            "selected": false,
+            "text": "postgres",
+            "value": "postgres"
+          },
+          {
+            "selected": false,
+            "text": "garage",
+            "value": "garage"
+          },
+          {
+            "selected": false,
+            "text": "redis",
+            "value": "redis"
+          }
+        ],
+        "hide": 0
+      },
+      {
+        "type": "custom",
+        "name": "nivel",
+        "label": "Nível",
+        "description": "Nível do log (pino).",
+        "query": "error,warn,info,debug",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "All",
+            "value": "$__all"
+          },
+          {
+            "selected": false,
+            "text": "error",
+            "value": "error"
+          },
+          {
+            "selected": false,
+            "text": "warn",
+            "value": "warn"
+          },
+          {
+            "selected": false,
+            "text": "info",
+            "value": "info"
+          },
+          {
+            "selected": false,
+            "text": "debug",
+            "value": "debug"
+          }
+        ],
+        "hide": 0
+      },
+      {
         "type": "textbox",
         "name": "correlationId",
         "label": "correlationId",
@@ -483,13 +594,63 @@
       }
     },
     {
+      "id": 22,
+      "type": "row",
+      "title": "Logs",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 23,
+      "type": "logs",
+      "title": "Logs dos serviços (filtre por serviço, nível e correlationId no topo)",
+      "description": "Loki (72 h), coletado pelo Grafana Alloy. Filtros no topo: serviço, nível e correlationId (o caminho HTTP -> outbox -> worker -> e-mail de uma requisição). Para navegar sem LogQL: menu Drilldown -> Logs.",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "expr": "{namespace=\"fiapx\", app=~\"${servico:regex}\", level=~\"${nivel:regex}\"} |= \"$correlationId\" | json",
+          "queryType": "range"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      }
+    },
+    {
       "id": 8,
       "type": "row",
       "title": "Fluxo de vídeos",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 5,
+        "y": 16,
         "w": 24,
         "h": 1
       },
@@ -506,7 +667,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 6,
+        "y": 17,
         "w": 12,
         "h": 8
       },
@@ -600,7 +761,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 6,
+        "y": 17,
         "w": 12,
         "h": 8
       },
@@ -705,7 +866,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 14,
+        "y": 25,
         "w": 12,
         "h": 8
       },
@@ -795,7 +956,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 14,
+        "y": 25,
         "w": 12,
         "h": 8
       },
@@ -862,7 +1023,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 22,
+        "y": 33,
         "w": 8,
         "h": 8
       },
@@ -934,7 +1095,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 22,
+        "y": 33,
         "w": 8,
         "h": 8
       },
@@ -1006,7 +1167,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 22,
+        "y": 33,
         "w": 8,
         "h": 8
       },
@@ -1078,7 +1239,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 30,
+        "y": 41,
         "w": 8,
         "h": 8
       },
@@ -1157,7 +1318,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 30,
+        "y": 41,
         "w": 8,
         "h": 8
       },
@@ -1236,7 +1397,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 30,
+        "y": 41,
         "w": 8,
         "h": 8
       },
@@ -1304,7 +1465,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 38,
+        "y": 49,
         "w": 24,
         "h": 1
       },
@@ -1321,7 +1482,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 39,
+        "y": 50,
         "w": 8,
         "h": 8
       },
@@ -1394,7 +1555,7 @@
       },
       "gridPos": {
         "x": 8,
-        "y": 39,
+        "y": 50,
         "w": 8,
         "h": 8
       },
@@ -1466,7 +1627,7 @@
       },
       "gridPos": {
         "x": 16,
-        "y": 39,
+        "y": 50,
         "w": 8,
         "h": 8
       },
@@ -1532,56 +1693,6 @@
           "mode": "multi",
           "sort": "desc"
         }
-      }
-    },
-    {
-      "id": 22,
-      "type": "row",
-      "title": "Logs",
-      "collapsed": false,
-      "gridPos": {
-        "x": 0,
-        "y": 47,
-        "w": 24,
-        "h": 1
-      },
-      "panels": []
-    },
-    {
-      "id": 23,
-      "type": "logs",
-      "title": "Logs dos serviços (filtre pelo correlationId no topo)",
-      "description": "Loki (72 h). Cole um correlationId no campo do topo para ver o caminho HTTP -> outbox -> worker -> e-mail.",
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "gridPos": {
-        "x": 0,
-        "y": 48,
-        "w": 24,
-        "h": 12
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "expr": "{namespace=\"fiapx\", app=~\"video-api|video-worker|notification-service\"} |= \"$correlationId\" | json",
-          "queryType": "range"
-        }
-      ],
-      "options": {
-        "showTime": true,
-        "showLabels": false,
-        "showCommonLabels": false,
-        "wrapLogMessage": true,
-        "prettifyLogMessage": false,
-        "enableLogDetails": true,
-        "dedupStrategy": "none",
-        "sortOrder": "Descending"
       }
     }
   ]
