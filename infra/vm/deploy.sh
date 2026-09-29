@@ -55,6 +55,11 @@ SELF=$(readlink -f -- "${BASH_SOURCE[0]}")
 readonly SELF
 
 export KUBECONFIG=$HOME_DIR/kubeconfig KUBECACHEDIR=$STATE/kube-cache HOME=$STATE
+# /usr/local/bin/kubectl é o binário multicall do K3s: ele tenta ler /etc/rancher/k3s/config.yaml
+# (0600, só root) e, como fiapx-deploy, imprime 3 avisos "permission denied" por chamada. Esses
+# avisos quebraram o 1º deploy (entraram na saída capturada como se fossem nomes de recurso).
+# Um arquivo de config vazio e legível os elimina; o kubeconfig acima continua valendo.
+export K3S_CONFIG_FILE=/dev/null
 export GIT_TERMINAL_PROMPT=0 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 
 ACTION='' SHA=''
@@ -70,11 +75,14 @@ kapply() { kq apply --server-side --field-manager=fiapx-deploy --force-conflicts
 # status 1 se o kubectl falhar por outro motivo (API fora, arquivo inválido): o chamador NÃO pode
 # confundir "falhou" com "não há nada" (pularia migração ou rollout sem conferir).
 names_in() {
-  local out rc=0
-  out=$(kubectl create --dry-run=client -o name -f "$1" ${2:+-l "$2"} 2>&1) || rc=$?
+  local out err rc=0 errf
+  errf=$(mktemp) || return 1
+  # stdout e stderr SEPARADOS: só o stdout são nomes; um aviso no stderr nunca vira "recurso".
+  out=$(kubectl create --dry-run=client -o name -f "$1" ${2:+-l "$2"} 2>"$errf") || rc=$?
+  err=$(<"$errf"); rm -f "$errf"
   if (( rc == 0 )); then printf '%s\n' "$out"; return 0; fi
-  [[ $out == *"no objects passed to create"* ]] && return 0
-  log "kubectl falhou ao listar objetos de ${1##*/}${2:+ ($2)}: $out" >&2   # stderr: stdout é o resultado
+  [[ $err == *"no objects passed to create"* ]] && return 0
+  log "kubectl falhou ao listar objetos de ${1##*/}${2:+ ($2)}: $err" >&2   # stderr: stdout é o resultado
   return 1
 }
 
