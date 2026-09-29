@@ -5,7 +5,7 @@ import {
   InMemoryUserRepository,
   USER_ID,
 } from '../../../../../test/support/fakes';
-import { LoginUseCase, TIMING_EQUALIZER_HASH } from './login.use-case';
+import { LoginUseCase } from './login.use-case';
 
 function setup() {
   const users = new InMemoryUserRepository();
@@ -35,6 +35,6 @@ describe('LoginUseCase', () => {
     await expect(
       useCase.execute({ email: 'ninguem@example.com', password: 'x' }),
     ).rejects.toMatchObject({ appError: { code: 'A0001' } });
-    expect(verify).toHaveBeenCalledWith('x', TIMING_EQUALIZER_HASH);
+    expect(verify).toHaveBeenCalledWith('x', 'hash:timing-equalizer');
   });
 });

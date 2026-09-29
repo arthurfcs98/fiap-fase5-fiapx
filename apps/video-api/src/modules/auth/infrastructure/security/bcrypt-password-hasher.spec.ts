@@ -1,12 +1,27 @@
 import { getRounds } from 'bcryptjs';
 import { BCRYPT_COST } from '../../auth.constants';
-import { TIMING_EQUALIZER_HASH } from '../../application/use-cases/login.use-case';
 import { BcryptPasswordHasher } from './bcrypt-password-hasher';
 
 describe('BcryptPasswordHasher', () => {
-  it('uses cost 12 by default (contract) and the timing equalizer hash has the same cost', () => {
+  it('uses cost 12 by default (contract)', () => {
     expect(BCRYPT_COST).toBe(12);
-    expect(getRounds(TIMING_EQUALIZER_HASH)).toBe(BCRYPT_COST);
+  });
+
+  it('timing equalizer: one hash per process, same cost, of a value nobody knows', async () => {
+    const hasher = new BcryptPasswordHasher(4);
+    const equalizer = await hasher.timingEqualizerHash();
+
+    expect(getRounds(equalizer)).toBe(4);
+    await expect(hasher.timingEqualizerHash()).resolves.toBe(equalizer); // memoized
+    await expect(hasher.verify('', equalizer)).resolves.toBe(false);
+    await expect(new BcryptPasswordHasher(4).timingEqualizerHash()).resolves.not.toBe(equalizer);
+  });
+
+  it('computes the timing equalizer at module init', async () => {
+    const hasher = new BcryptPasswordHasher(4);
+    const spy = jest.spyOn(hasher, 'timingEqualizerHash');
+    await hasher.onModuleInit();
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it('hashes and verifies (low cost in the test for speed)', async () => {

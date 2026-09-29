@@ -7,14 +7,6 @@ import { PASSWORD_HASHER } from '../../domain/password-hasher.port';
 import type { UserRepository } from '../../domain/user.repository';
 import { USER_REPOSITORY } from '../../domain/user.repository';
 
-/**
- * bcrypt hash (cost 12) of a random throwaway value. Unknown e-mails are compared against it so
- * the response time does not reveal whether the e-mail is registered.
- * Not a credential: the plaintext was random and discarded, no account uses it (Sonar S8215 is a
- * false positive here).
- */
-export const TIMING_EQUALIZER_HASH = '$2b$12$vEasjY31Jx.3X04.PHf6ZupMz8JiqzCi3EIvVqjOVSAWoqwJ8Thm2'; // NOSONAR
-
 export interface LoginInput {
   email: string;
   password: string;
@@ -33,10 +25,9 @@ export class LoginUseCase {
 
   async execute(input: LoginInput): Promise<AccessToken> {
     const user = await this.users.findByEmail(input.email);
-    const valid = await this.hasher.verify(
-      input.password,
-      user?.passwordHash ?? TIMING_EQUALIZER_HASH,
-    );
+    // Unknown e-mail: compare against a hash of a random secret, so both paths cost one bcrypt.
+    const passwordHash = user?.passwordHash ?? (await this.hasher.timingEqualizerHash());
+    const valid = await this.hasher.verify(input.password, passwordHash);
     if (!user || !valid) {
       this.logger.warn({ msg: 'Login recusado', userId: user?.id });
       throw AuthErrors.INVALID_CREDENTIALS();

@@ -91,6 +91,10 @@ export class FakePasswordHasher implements PasswordHasher {
   verify(plain: string, hash: string): Promise<boolean> {
     return Promise.resolve(hash === `hash:${plain}`);
   }
+
+  timingEqualizerHash(): Promise<string> {
+    return Promise.resolve('hash:timing-equalizer');
+  }
 }
 
 export class FakeTokenIssuer implements AccessTokenIssuer {
