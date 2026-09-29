@@ -1,0 +1,50 @@
+# Site público do FIAP Frames no Caddy compartilhado da VM (/opt/edge/sites/frames.caddy).
+#
+# frames.asdevit.com é o endereço oficial do produto (a marca não usa "X").
+# Os identificadores técnicos continuam "fiapx": o Ingress do cluster responde ao host
+# fiapx.asdevit.com, então o Caddy reescreve o Host ao repassar para o Traefik. Assim o
+# endereço público muda sem mexer no Ingress, no deploy.sh nem no smoke.
+#
+# Instalado JUNTO com o fiapx.caddy por infra/vm/30-ingress.sh --caddy (validação offline, troca
+# atômica, reload sem restart; se algo falhar, os arquivos anteriores voltam).
+#
+# "http://" explícito: até a Configuration Rule "SSL Full (strict)" da Cloudflare incluir este
+# host (README da infra/vm, P13), a borda fala HTTP com a origem ("Flexible"); sem ele o Caddy
+# redirecionaria para HTTPS e a Cloudflare entraria em loop (308). Mas HTTP puro de ponta a ponta
+# NÃO é atendido: o @texto_puro redireciona para https:// quem chegou em HTTP e cujo visitante
+# também usou HTTP (mesma correção do achado 1 no fiapx.caddy). Com a regra Full (strict), o
+# bloco http:// fica só com o redirect e o desafio ACME, e pode sair (como no fiapx.caddy).
+http://frames.asdevit.com, https://frames.asdevit.com {
+	# Visitante em http:// (ou alguém falando direto com a origem em HTTP) -> 308 para https://.
+	# Passa sem redirect: o desafio HTTP-01 do Let's Encrypt e o pedido que a Cloudflare repassa em
+	# HTTP depois de receber em HTTPS (modo Flexible, X-Forwarded-Proto: https).
+	@texto_puro {
+		protocol http
+		not header X-Forwarded-Proto https
+		not path /.well-known/acme-challenge/*
+	}
+	redir @texto_puro https://{host}{uri} 308
+
+	encode zstd gzip
+	header -Server
+
+	# Mesmo teto da Cloudflare (plano free). O video-api recusa acima de MAX_UPLOAD_MB (95).
+	request_body {
+		max_size 100MB
+	}
+
+	# /metrics nunca sai para a internet: o Prometheus raspa por dentro do cluster.
+	@metrics path /metrics /metrics/*
+	respond @metrics 404
+
+	reverse_proxy 172.18.0.1:30080 {
+		header_up Host fiapx.asdevit.com
+		header_up X-Forwarded-Host frames.asdevit.com
+		header_up X-Real-IP {client_ip}
+		header_up X-Forwarded-For {client_ip}
+		flush_interval -1
+		transport http {
+			dial_timeout 3s
+		}
+	}
+}

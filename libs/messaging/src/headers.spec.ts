@@ -1,4 +1,11 @@
-import { MESSAGE_HEADERS, readRetryCount, retryHeaders } from './headers';
+import {
+  MESSAGE_HEADERS,
+  readDeliveryCount,
+  readLastDeathReason,
+  readRetryCount,
+  retryHeaders,
+  stripBrokerHeaders,
+} from './headers';
 
 describe('readRetryCount', () => {
   it.each([
@@ -33,5 +40,57 @@ describe('retryHeaders', () => {
       'x-retry-count': 1,
       'x-last-error': 'timeout',
     });
+  });
+});
+
+describe('stripBrokerHeaders', () => {
+  it('remove x-death, x-*-death-* e contadores do broker, preservando o resto', () => {
+    const headers = {
+      'x-correlation-id': 'cid',
+      'x-retry-count': 1,
+      'x-death': [{ queue: 'q.retry.1', reason: 'expired' }],
+      'x-first-death-queue': 'q.retry.1',
+      'x-first-death-reason': 'expired',
+      'x-first-death-exchange': '',
+      'x-last-death-queue': 'q.retry.1',
+      'x-last-death-reason': 'expired',
+      'x-last-death-exchange': '',
+      'x-delivery-count': 2,
+      'x-acquired-count': 3,
+    };
+
+    expect(stripBrokerHeaders(headers)).toEqual({ 'x-correlation-id': 'cid', 'x-retry-count': 1 });
+    expect(headers['x-death']).toBeDefined();
+    expect(stripBrokerHeaders(undefined)).toEqual({});
+  });
+});
+
+describe('readDeliveryCount', () => {
+  it.each([
+    [undefined, 0],
+    [{}, 0],
+    [{ 'x-delivery-count': 4 }, 4],
+    [{ 'x-delivery-count': '4' }, 0],
+    [{ 'x-delivery-count': -1 }, 0],
+  ])('%p → %p', (headers, expected) => {
+    expect(readDeliveryCount(headers as Record<string, unknown> | undefined)).toBe(expected);
+  });
+});
+
+describe('readLastDeathReason', () => {
+  it.each([
+    [undefined, undefined],
+    [{}, undefined],
+    [{ 'x-last-death-reason': 'delivery_limit' }, 'delivery_limit'],
+    [
+      { 'x-last-death-reason': '', 'x-death': [{ reason: 'rejected' }, { reason: 'expired' }] },
+      'rejected',
+    ],
+    [{ 'x-death': [] }, undefined],
+    [{ 'x-death': 'x' }, undefined],
+    [{ 'x-death': [null] }, undefined],
+    [{ 'x-death': [{ reason: 1 }] }, undefined],
+  ])('%p → %p', (headers, expected) => {
+    expect(readLastDeathReason(headers as Record<string, unknown> | undefined)).toBe(expected);
   });
 });

@@ -47,6 +47,23 @@ export class VideoErrors {
     );
   }
 
+  /**
+   * Zip removido pela retenção (`ZIP_RETENTION_DAYS`, contratos.md, seção 12): `410 Gone`, o
+   * recurso existiu e não volta (não há reprocessamento). Vale para o download e para o pedido
+   * de URL de download de um vídeo com `expired_at` preenchido.
+   */
+  static ZIP_EXPIRED(id: string): AppErrorException {
+    return new AppErrorException(
+      new AppError(
+        410,
+        'ZIP_EXPIRED',
+        'V0006',
+        'O arquivo .zip deste vídeo expirou e foi removido pela política de retenção.',
+        { id },
+      ),
+    );
+  }
+
   static INVALID_DOWNLOAD_SIGNATURE(): AppErrorException {
     return new AppErrorException(
       new AppError(

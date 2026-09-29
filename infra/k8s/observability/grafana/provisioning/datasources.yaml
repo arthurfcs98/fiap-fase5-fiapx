@@ -1,0 +1,27 @@
+# Fontes de dados provisionadas como código (não editáveis pela UI). Os "uid" fixos são os
+# que os dashboards JSON referenciam.
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s          # = scrape_interval
+      httpMethod: POST
+      manageAlerts: true         # mostra as regras do Prometheus em Alerting -> Alert rules
+      prometheusType: Prometheus
+      prometheusVersion: 3.13.3
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000

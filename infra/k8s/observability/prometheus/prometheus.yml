@@ -1,0 +1,171 @@
+# =============================================================================
+# Prometheus do FIAP X (contratos.md, seção 13). Descobre os alvos sozinho pela API do
+# Kubernetes (kubernetes_sd), SÓ no namespace fiapx, pelas anotações dos pods:
+#
+#   prometheus.io/scrape: "true"      entra na coleta
+#   prometheus.io/port / path         onde está o /metrics
+#   fiapx.io/metrics-auth: bearer     o /metrics exige METRICS_TOKEN (os 3 apps, :9464)
+#   fiapx.io/metrics-auth: garage     o /metrics exige o metrics_token do Garage (:3903)
+#   (sem a anotação)                  /metrics aberto (RabbitMQ :15692, Loki, Grafana, Alloy)
+#
+# O Prometheus não consegue trocar a credencial por alvo via relabel: por isso um job por tipo
+# de autenticação. Permissões (só leitura): infra/vm/k8s/observability-rbac.yaml (root).
+# =============================================================================
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 30s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # O próprio Prometheus.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+        labels:
+          app: prometheus
+
+  # video-api, video-worker e notification-service (:9464/metrics com Bearer).
+  - job_name: fiapx-services
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/metrics-token
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [fiapx]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        regex: "true"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_annotation_fiapx_io_metrics_auth]
+        regex: bearer
+        action: keep
+      # Só pods em execução (um pod Pending/Succeeded não é alvo).
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      # Porta e caminho vindos das anotações.
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        regex: (.+)
+        target_label: __metrics_path__
+      # Rótulos úteis nas consultas (nenhum com dado pessoal: LGPD, contratos.md seção 12).
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        target_label: app
+    # O sd gera um alvo por porta declarada no pod (o api tem 3000 e 9464). Depois do rewrite
+    # do __address__ eles ficam com os mesmos rótulos e o Prometheus mantém um só.
+
+  # Garage (:3903/metrics com o metrics_token).
+  - job_name: garage
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/garage-metrics-token
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [fiapx]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        regex: "true"
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_annotation_fiapx_io_metrics_auth]
+        regex: garage
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        regex: (.+)
+        target_label: __metrics_path__
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        target_label: app
+
+  # Pods com /metrics aberto: RabbitMQ (rabbitmq_prometheus :15692), Loki, Grafana, Alloy.
+  - job_name: kubernetes-pods
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names: [fiapx]
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        regex: "true"
+        action: keep
+      # Quem exige credencial fica com os jobs acima.
+      - source_labels: [__meta_kubernetes_pod_annotation_fiapx_io_metrics_auth]
+        regex: .+
+        action: drop
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        regex: (.+)
+        target_label: __metrics_path__
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+      - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+        target_label: app
+
+  # KEDA (instalado pelo infra/vm/k8s/keda-helmchart.yaml, namespace keda): métricas do
+  # operador (keda_scaler_metrics_value = tamanho da fila que o KEDA enxergou, erros do
+  # scaler) e do metrics-apiserver. Alvo fixo pelo Service: não precisa de permissão no
+  # namespace keda.
+  - job_name: keda
+    static_configs:
+      - targets:
+          - keda-operator.keda.svc.cluster.local:8080
+          - keda-operator-metrics-apiserver.keda.svc.cluster.local:8080
+        labels:
+          app: keda
+
+  # CPU e memória por container (cAdvisor do kubelet). Precisa do ClusterRole
+  # fiapx-prometheus-kubelet (nodes/metrics, infra/vm/k8s/observability-rbac.yaml). O kubelet usa certificado
+  # autoassinado do K3s, por isso insecure_skip_verify; o token é o da ServiceAccount.
+  # Só as séries do namespace fiapx e só 5 métricas (cardinalidade e disco sob controle).
+  - job_name: kubelet-cadvisor
+    scheme: https
+    metrics_path: /metrics/cadvisor
+    tls_config:
+      insecure_skip_verify: true
+    authorization:
+      type: Bearer
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_node_name]
+        target_label: node
+    metric_relabel_configs:
+      - source_labels: [namespace]
+        regex: fiapx
+        action: keep
+      - source_labels: [__name__]
+        regex: container_cpu_usage_seconds_total|container_memory_working_set_bytes|container_cpu_cfs_throttled_periods_total|container_cpu_cfs_periods_total|container_oom_events_total
+        action: keep
+      # Série do pod inteiro (container="") e do "pause" duplicariam as somas por pod.
+      - source_labels: [container]
+        regex: ^$|POD
+        action: drop

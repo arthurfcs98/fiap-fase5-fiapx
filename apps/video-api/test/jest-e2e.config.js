@@ -7,5 +7,11 @@ const base = createJestProject({
   testRegex: '.*\\.e2e-spec\\.ts$',
 });
 
-// E2E valida comportamento HTTP de ponta a ponta; cobertura é medida nos testes unitários.
-module.exports = { ...base, collectCoverageFrom: undefined, coverageThreshold: undefined };
+// E2E exercises the HTTP behavior end to end against real containers (Testcontainers, images
+// from compose.yaml); coverage is measured by the unit tests.
+module.exports = {
+  ...base,
+  collectCoverageFrom: undefined,
+  coverageThreshold: undefined,
+  testTimeout: 240_000,
+};

@@ -1,0 +1,18 @@
+# Sem Ingress de propósito: acesso só por port-forward
+#   kubectl -n fiapx port-forward svc/grafana 3000:3000
+# (na VM, como root, via túnel SSH a partir do Mac; passo a passo em docs/observabilidade.md).
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: observability
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

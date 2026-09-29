@@ -1,0 +1,251 @@
+# Testes unitários das regras (promtool test rules). Rodar: infra/k8s/scripts/validate.sh
+# Cada caso monta séries sintéticas e confere as regras de gravação e se o alerta dispara
+# (ou não). As consultas em ALERTS{...} evitam depender do texto das anotações.
+rule_files:
+  - ../rules/fiapx-slo.rules.yml
+  - ../rules/fiapx-alerts.rules.yml
+
+evaluation_interval: 30s
+
+tests:
+  # ------------------------------------------------------------------ disponibilidade
+  - name: 10% de 5xx dispara FiapxApiErrorRateHigh (queima 14,4x)
+    interval: 1m
+    input_series:
+      - series: 'fiapx_http_request_duration_seconds_count{method="GET",route="/api/videos",status="200"}'
+        values: "0+90x120"
+      - series: 'fiapx_http_request_duration_seconds_count{method="POST",route="/api/videos",status="500"}'
+        values: "0+10x120"
+    promql_expr_test:
+      # round(): o ponto flutuante dá 0,09999...; o teste compara com 4 casas.
+      - expr: round(fiapx:slo_availability:error_ratio_rate5m, 0.0001)
+        eval_time: 60m
+        exp_samples:
+          - labels: "{}"
+            value: 0.1
+      - expr: ALERTS{alertname="FiapxApiErrorRateHigh", alertstate="firing"}
+        eval_time: 70m
+        exp_samples:
+          - labels: 'ALERTS{alertname="FiapxApiErrorRateHigh",alertstate="firing",severity="critical",slo="disponibilidade-api"}'
+            value: 1
+
+  - name: sem nenhum 5xx a razão de erro é 0 (e não "sem dados") e nada dispara
+    interval: 1m
+    input_series:
+      - series: 'fiapx_http_request_duration_seconds_count{method="GET",route="/api/videos",status="200"}'
+        values: "0+100x120"
+    promql_expr_test:
+      - expr: fiapx:slo_availability:error_ratio_rate1h
+        eval_time: 90m
+        exp_samples:
+          - labels: "fiapx:slo_availability:error_ratio_rate1h"
+            value: 0
+      - expr: ALERTS{alertname="FiapxApiErrorRateHigh"}
+        eval_time: 90m
+        exp_samples: []
+
+  - name: 0,4% de 5xx fica dentro do orçamento (não dispara)
+    interval: 1m
+    input_series:
+      - series: 'fiapx_http_request_duration_seconds_count{method="GET",route="/api/videos",status="200"}'
+        values: "0+996x400"
+      - series: 'fiapx_http_request_duration_seconds_count{method="GET",route="/api/videos",status="503"}'
+        values: "0+4x400"
+    promql_expr_test:
+      - expr: ALERTS{alertname="FiapxApiErrorRateHigh"}
+        eval_time: 390m
+        exp_samples: []
+
+  # ------------------------------------------------------------------ latência do upload
+  - name: upload com p95 acima de 5 s dispara FiapxUploadLatencyHigh
+    interval: 1m
+    input_series:
+      # 100 uploads/min: 10 em até 2,5 s e 90 entre 5 e 10 s -> p95 entre 5 e 10 s.
+      - series: 'fiapx_http_request_duration_seconds_bucket{method="POST",route="/api/videos",status="202",le="2.5"}'
+        values: "0+10x60"
+      - series: 'fiapx_http_request_duration_seconds_bucket{method="POST",route="/api/videos",status="202",le="5"}'
+        values: "0+10x60"
+      - series: 'fiapx_http_request_duration_seconds_bucket{method="POST",route="/api/videos",status="202",le="10"}'
+        values: "0+100x60"
+      - series: 'fiapx_http_request_duration_seconds_bucket{method="POST",route="/api/videos",status="202",le="+Inf"}'
+        values: "0+100x60"
+      - series: 'fiapx_http_request_duration_seconds_count{method="POST",route="/api/videos",status="202"}'
+        values: "0+100x60"
+    promql_expr_test:
+      - expr: fiapx:slo_upload_latency:sli_7d
+        eval_time: 30m
+        exp_samples:
+          - labels: "fiapx:slo_upload_latency:sli_7d"
+            value: 0.1
+      - expr: ALERTS{alertname="FiapxUploadLatencyHigh", alertstate="firing"}
+        eval_time: 30m
+        exp_samples:
+          - labels: 'ALERTS{alertname="FiapxUploadLatencyHigh",alertstate="firing",severity="warning",slo="aceite-upload"}'
+            value: 1
+
+  - name: bucket le="5.0" (normalização do Prometheus 3) também conta como dentro do SLO
+    interval: 1m
+    input_series:
+      - series: 'fiapx_http_request_duration_seconds_bucket{method="POST",route="/api/videos",status="202",le="5.0"}'
+        values: "0+99x60"
+      - series: 'fiapx_http_request_duration_seconds_bucket{method="POST",route="/api/videos",status="202",le="+Inf"}'
+        values: "0+100x60"
+      - series: 'fiapx_http_request_duration_seconds_count{method="POST",route="/api/videos",status="202"}'
+        values: "0+100x60"
+    promql_expr_test:
+      - expr: fiapx:slo_upload_latency:sli_7d
+        eval_time: 30m
+        exp_samples:
+          - labels: "fiapx:slo_upload_latency:sli_7d"
+            value: 0.99
+      - expr: round(fiapx:slo_upload_latency:error_budget_remaining_7d, 0.0001)
+        eval_time: 30m
+        exp_samples:
+          - labels: "{}"
+            value: 0.8
+
+  # ------------------------------------------------------------------ processamento
+  - name: processamento com p95 acima de 120 s dispara FiapxProcessingSlow
+    interval: 1m
+    input_series:
+      # 10 vídeos/min, todos entre 120 e 300 s.
+      - series: 'fiapx_video_processing_duration_seconds_bucket{result="completed",le="120"}'
+        values: "0x90"
+      - series: 'fiapx_video_processing_duration_seconds_bucket{result="completed",le="300"}'
+        values: "0+10x90"
+      - series: 'fiapx_video_processing_duration_seconds_bucket{result="completed",le="+Inf"}'
+        values: "0+10x90"
+      - series: 'fiapx_video_processing_duration_seconds_count{result="completed"}'
+        values: "0+10x90"
+      # Falha permanente rápida não entra no SLO de tempo (só result="completed").
+      - series: 'fiapx_video_processing_duration_seconds_bucket{result="failed",le="120"}'
+        values: "0+50x90"
+      - series: 'fiapx_video_processing_duration_seconds_bucket{result="failed",le="+Inf"}'
+        values: "0+50x90"
+    promql_expr_test:
+      - expr: fiapx:slo_processing:sli_7d
+        eval_time: 60m
+        exp_samples:
+          - labels: "fiapx:slo_processing:sli_7d"
+            value: 0
+      - expr: ALERTS{alertname="FiapxProcessingSlow", alertstate="firing"}
+        eval_time: 60m
+        exp_samples:
+          - labels: 'ALERTS{alertname="FiapxProcessingSlow",alertstate="firing",severity="warning",slo="tempo-processamento"}'
+            value: 1
+
+  # ------------------------------------------------------------------ sucesso do pipeline
+  - name: P0098/P0099 contam como erro do sistema; P0001 (entrada inválida) não
+    interval: 1m
+    input_series:
+      - series: "fiapx_videos_completed_total"
+        values: "0+98x60"
+      - series: 'fiapx_videos_failed_total{error_code="P0099"}'
+        values: "0+2x60"
+      - series: 'fiapx_videos_failed_total{error_code="P0001"}'
+        values: "0+50x60"
+    promql_expr_test:
+      - expr: fiapx:slo_pipeline:error_ratio_7d
+        eval_time: 30m
+        exp_samples:
+          - labels: "fiapx:slo_pipeline:error_ratio_7d"
+            value: 0.02
+      - expr: fiapx:slo_pipeline:error_budget_remaining_7d
+        eval_time: 30m
+        exp_samples:
+          - labels: "fiapx:slo_pipeline:error_budget_remaining_7d"
+            value: -1
+
+  - name: sem falha do sistema o SLI do pipeline é 100%
+    interval: 1m
+    input_series:
+      - series: "fiapx_videos_completed_total"
+        values: "0+5x60"
+      - series: 'fiapx_videos_failed_total{error_code="P0002"}'
+        values: "0+1x60"
+    promql_expr_test:
+      - expr: fiapx:slo_pipeline:sli_7d
+        eval_time: 30m
+        exp_samples:
+          - labels: "fiapx:slo_pipeline:sli_7d"
+            value: 1
+
+  # ------------------------------------------------------------------ nenhuma requisição perdida
+  - name: DLQ com mensagem dispara FiapxDlqNotEmpty (por fila); fila de trabalho não
+    interval: 1m
+    input_series:
+      - series: 'rabbitmq_queue_messages{vhost="/",queue="worker.video-uploaded.dlq"}'
+        values: "0 0 1 1 1 1 1"
+      - series: 'rabbitmq_queue_messages{vhost="/",queue="notification.events.dlq"}'
+        values: "0 0 0 0 0 0 0"
+      - series: 'rabbitmq_queue_messages{vhost="/",queue="worker.video-uploaded"}'
+        values: "9 9 9 9 9 9 9"
+    promql_expr_test:
+      - expr: ALERTS{alertname="FiapxDlqNotEmpty", alertstate="firing"}
+        eval_time: 5m
+        exp_samples:
+          - labels: 'ALERTS{alertname="FiapxDlqNotEmpty",alertstate="firing",queue="worker.video-uploaded.dlq",severity="critical",slo="nenhuma-requisicao-perdida"}'
+            value: 1
+
+  - name: outbox com 100+ pendentes por 5 min dispara FiapxOutboxBacklog (max entre réplicas)
+    interval: 1m
+    input_series:
+      - series: 'fiapx_outbox_pending{pod="video-api-a"}'
+        values: "0 120 150 150 150 150 150 150 150"
+      - series: 'fiapx_outbox_pending{pod="video-api-b"}'
+        values: "0 120 150 150 150 150 150 150 150"
+    promql_expr_test:
+      - expr: ALERTS{alertname="FiapxOutboxBacklog", alertstate="pending"}
+        eval_time: 3m
+        exp_samples:
+          - labels: 'ALERTS{alertname="FiapxOutboxBacklog",alertstate="pending",severity="critical",slo="nenhuma-requisicao-perdida"}'
+            value: 1
+      - expr: ALERTS{alertname="FiapxOutboxBacklog", alertstate="firing"}
+        eval_time: 8m
+        exp_samples:
+          - labels: 'ALERTS{alertname="FiapxOutboxBacklog",alertstate="firing",severity="critical",slo="nenhuma-requisicao-perdida"}'
+            value: 1
+
+  - name: fila worker.video-uploaded com mais de 10 prontas por 10 min dispara FiapxQueueBacklogHigh
+    interval: 1m
+    input_series:
+      - series: 'rabbitmq_queue_messages_ready{vhost="/",queue="worker.video-uploaded"}'
+        values: "30x20"
+      - series: 'rabbitmq_queue_messages_ready{vhost="/",queue="api.video-processing"}'
+        values: "500x20"
+    promql_expr_test:
+      - expr: ALERTS{alertname="FiapxQueueBacklogHigh", alertstate="firing"}
+        eval_time: 15m
+        exp_samples:
+          - labels: 'ALERTS{alertname="FiapxQueueBacklogHigh",alertstate="firing",severity="warning"}'
+            value: 1
+
+  # ------------------------------------------------------------------ disponibilidade dos alvos
+  - name: nenhum video-worker respondendo dispara FiapxWorkerDown e FiapxTargetDown
+    interval: 1m
+    input_series:
+      - series: 'up{job="fiapx-services",app="video-worker",instance="10.42.0.10:9464",pod="video-worker-1"}'
+        values: "1 1 0 0 0 0 0 0 0 0"
+      - series: 'up{job="fiapx-services",app="video-api",instance="10.42.0.11:9464",pod="video-api-1"}'
+        values: "1 1 1 1 1 1 1 1 1 1"
+    promql_expr_test:
+      - expr: ALERTS{alertname="FiapxWorkerDown", alertstate="firing"}
+        eval_time: 9m
+        exp_samples:
+          - labels: 'ALERTS{alertname="FiapxWorkerDown",alertstate="firing",severity="critical"}'
+            value: 1
+      - expr: ALERTS{alertname="FiapxTargetDown", alertstate="firing"}
+        eval_time: 9m
+        exp_samples:
+          - labels: 'ALERTS{alertname="FiapxTargetDown",alertstate="firing",severity="warning",job="fiapx-services",app="video-worker",instance="10.42.0.10:9464",pod="video-worker-1"}'
+            value: 1
+
+  - name: worker no ar não dispara FiapxWorkerDown
+    interval: 1m
+    input_series:
+      - series: 'up{job="fiapx-services",app="video-worker",instance="10.42.0.10:9464",pod="video-worker-1"}'
+        values: "1x10"
+    promql_expr_test:
+      - expr: ALERTS{alertname="FiapxWorkerDown"}
+        eval_time: 9m
+        exp_samples: []

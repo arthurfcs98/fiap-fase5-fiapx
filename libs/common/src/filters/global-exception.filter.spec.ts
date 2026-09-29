@@ -9,7 +9,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { HttpAdapterHost } from '@nestjs/core';
-import { CommonErrors, VideoErrors } from '../errors/catalog';
+import { AuthErrors, CommonErrors, VideoErrors } from '../errors/catalog';
 import type { ErrorResponseBody } from './global-exception.filter';
 import { GlobalExceptionFilter } from './global-exception.filter';
 
@@ -87,6 +87,21 @@ describe('GlobalExceptionFilter', () => {
       expect.stringContaining('X0002 INTERNAL'),
       expect.any(String),
     );
+    expect(warnLog).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [() => AuthErrors.INVALID_PASSWORD_CONFIRMATION(), 400, 'A0004'],
+    [() => VideoErrors.ZIP_EXPIRED('v9'), 410, 'V0006'],
+  ])('códigos da LGPD saem com o status do catálogo (%#)', (factory, expectedStatus, code) => {
+    const { run, errorLog, warnLog } = setup();
+
+    const { body, status } = run(factory());
+
+    expect(status).toBe(expectedStatus);
+    expect(body.statusCode).toBe(expectedStatus);
+    expect(body.error.code).toBe(code);
+    expect(errorLog).not.toHaveBeenCalled();
     expect(warnLog).not.toHaveBeenCalled();
   });
 

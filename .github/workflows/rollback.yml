@@ -1,0 +1,59 @@
+# Rollback manual da produção (botão "Run workflow" na aba Actions): volta o namespace fiapx
+# para a release anterior registrada na VM (infra/vm/deploy.sh, pedido "rollback") e mostra o
+# estado. Usa o MESMO environment e o MESMO grupo de concorrência do job `deploy` do ci.yml, então
+# nunca roda junto com um deploy.
+name: rollback
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  rollback:
+    name: rollback (release anterior na VM)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions: {}
+    environment:
+      name: production
+      url: https://frames.asdevit.com
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: SSH (chave restrita + host key fixado)
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_KNOWN_HOSTS: ${{ secrets.VM_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          for name in VM_HOST VM_SSH_KEY VM_KNOWN_HOSTS; do
+            [[ -n ${!name} ]] || { echo "::error::secret $name ausente no environment production"; exit 1; }
+          done
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$VM_SSH_KEY" > ~/.ssh/fiapx_deploy
+          chmod 600 ~/.ssh/fiapx_deploy
+          printf '%s\n' "$VM_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CFG
+          Host fiapx-vm
+            HostName ${VM_HOST}
+            User fiapx-deploy
+            IdentityFile ~/.ssh/fiapx_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+            BatchMode yes
+            ConnectTimeout 15
+            LogLevel ERROR
+          CFG
+          chmod 600 ~/.ssh/config
+      - name: Rollback
+        run: ssh fiapx-vm rollback
+      - name: Estado depois do rollback
+        if: always()
+        run: ssh fiapx-vm status
+      - name: Apagar a chave do runner
+        if: always()
+        run: rm -f ~/.ssh/fiapx_deploy

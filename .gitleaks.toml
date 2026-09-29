@@ -1,0 +1,24 @@
+# =============================================================================
+# gitleaks (pre-commit e job `security` do CI): regras padrão do gitleaks + exceções ESTREITAS
+# para valores falsos conhecidos dos testes e da documentação. Nunca liberar um caminho inteiro
+# de código nem o `.env` (se ele for adicionado por engano, o gitleaks TEM de pegar).
+#
+#   gitleaks git --redact -v .          # histórico inteiro (igual ao CI)
+#   gitleaks protect --staged --redact   # o que o pre-commit roda
+# =============================================================================
+title = "FIAP X"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Senhas falsas de teste/demo ('senha-...') e a chave S3 de teste (0123456789abcdef...)"
+regexes = [
+  '''^senha-[A-Za-z0-9-]+$''',
+  '''^(0123456789abcdef)+$''',
+]
+
+[[allowlists]]
+description = "Idempotency-Key é um identificador de requisição escolhido pelo cliente, não um segredo"
+regexTarget = "line"
+regexes = ['''(?i)idempotency-key''']

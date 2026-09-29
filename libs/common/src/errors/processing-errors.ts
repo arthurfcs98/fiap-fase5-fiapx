@@ -35,3 +35,7 @@ export class NonRetryableError extends Error {
 export function isRetryableError(error: unknown): error is RetryableError {
   return error instanceof RetryableError;
 }
+
+export function isNonRetryableError(error: unknown): error is NonRetryableError {
+  return error instanceof NonRetryableError;
+}

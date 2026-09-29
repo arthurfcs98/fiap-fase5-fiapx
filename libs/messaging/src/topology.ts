@@ -63,7 +63,20 @@ export interface Topology {
   bindings: BindingDefinition[];
 }
 
-/** Bindings das filas principais (as filas de retry não têm binding; as DLQs são derivadas). */
+export interface TopologyOptions {
+  /**
+   * TTL de cada nível `.retry.N` (padrão {@link RETRY_DELAYS_MS}). Só para testes de integração
+   * (broker descartável): o TTL é argumento de fila, então valores diferentes num broker que já
+   * tem as filas geram PRECONDITION_FAILED. Produção usa sempre o padrão do contrato.
+   */
+  retryDelaysMs?: readonly number[];
+}
+
+/**
+ * Bindings das filas principais (as filas de retry não têm binding; as DLQs são derivadas).
+ * Binding novo num broker que já tem a fila é aditivo: o `bindQueue` do startup o cria sem
+ * PRECONDITION_FAILED (só argumento de fila exige migração).
+ */
 export const MAIN_QUEUE_BINDINGS: Readonly<Record<QueueName, readonly BindingDefinition[]>> = {
   [QUEUES.workerVideoUploaded]: [
     bind(QUEUES.workerVideoUploaded, EXCHANGES.events, ROUTING_KEYS.videoUploaded),
@@ -77,6 +90,8 @@ export const MAIN_QUEUE_BINDINGS: Readonly<Record<QueueName, readonly BindingDef
   [QUEUES.notificationEvents]: [
     bind(QUEUES.notificationEvents, EXCHANGES.events, ROUTING_KEYS.videoFailed),
     bind(QUEUES.notificationEvents, EXCHANGES.events, ROUTING_KEYS.videoCompleted),
+    // LGPD (contratos.md, seção 12): anonimiza as notificações do usuário eliminado.
+    bind(QUEUES.notificationEvents, EXCHANGES.events, ROUTING_KEYS.userDeleted),
   ],
 };
 
@@ -105,11 +120,16 @@ export function mainQueueArguments(queue: string): Record<string, string | numbe
 }
 
 /** Filas `.retry.N`: TTL fixo; ao expirar, voltam à fila original pela default exchange. */
-export function retryQueueArguments(queue: string, level: number): Record<string, string | number> {
+export function retryQueueArguments(
+  queue: string,
+  level: number,
+  retryDelaysMs: readonly number[] = RETRY_DELAYS_MS,
+): Record<string, string | number> {
   assertRetryLevel(level);
+  assertRetryDelays(retryDelaysMs);
   return {
     'x-queue-type': 'quorum',
-    'x-message-ttl': RETRY_DELAYS_MS[level - 1],
+    'x-message-ttl': retryDelaysMs[level - 1],
     'x-dead-letter-exchange': '',
     'x-dead-letter-routing-key': queue,
     'x-dead-letter-strategy': 'at-least-once',
@@ -118,7 +138,8 @@ export function retryQueueArguments(queue: string, level: number): Record<string
 }
 
 /** Topologia completa: exchanges, filas principais + `.retry.1..3` + `.dlq`, e bindings. */
-export function buildTopology(): Topology {
+export function buildTopology(options: TopologyOptions = {}): Topology {
+  const retryDelaysMs = options.retryDelaysMs ?? RETRY_DELAYS_MS;
   const queues: QueueDefinition[] = [];
   const bindings: BindingDefinition[] = [];
 
@@ -128,7 +149,7 @@ export function buildTopology(): Topology {
       queues.push({
         name: retryQueueName(queue, level),
         durable: true,
-        arguments: retryQueueArguments(queue, level),
+        arguments: retryQueueArguments(queue, level, retryDelaysMs),
       });
     }
     const dlq = deadLetterQueueName(queue);
@@ -150,6 +171,17 @@ export function buildTopology(): Topology {
 
 function bind(queue: string, exchange: string, routingKey: string): BindingDefinition {
   return { queue, exchange, routingKey };
+}
+
+function assertRetryDelays(retryDelaysMs: readonly number[]): void {
+  const valid =
+    retryDelaysMs.length === MAX_RETRIES &&
+    retryDelaysMs.every((delay) => Number.isInteger(delay) && delay > 0);
+  if (!valid) {
+    throw new RangeError(
+      `retryDelaysMs inválido: [${retryDelaysMs.join(', ')}] (esperado ${MAX_RETRIES} inteiros > 0)`,
+    );
+  }
 }
 
 function assertRetryLevel(level: number): void {

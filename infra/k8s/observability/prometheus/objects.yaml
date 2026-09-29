@@ -1,0 +1,41 @@
+# Objetos de apoio do Prometheus. A Role (pods do fiapx) e o ClusterRole (nodes/metrics, para o
+# cAdvisor) desta ServiceAccount ficam em infra/vm/k8s/observability-rbac.yaml, aplicados pelo
+# root (o CD não pode criar RBAC). O NOME "prometheus" é o contrato entre os dois arquivos.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: observability
+automountServiceAccountToken: false   # só o pod do Prometheus monta (spec.automountServiceAccountToken)
+---
+# Sem Ingress de propósito: acesso só por "kubectl port-forward" (docs/observabilidade.md).
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: observability
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: prometheus
+  ports:
+    - name: http
+      port: 9090
+      targetPort: http
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: observability
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 512Mi

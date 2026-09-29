@@ -1,0 +1,119 @@
+# video-worker: consome worker.video-uploaded (prefetch 1), roda ffprobe/ffmpeg e grava o zip.
+# Sem HTTP público (só :9464 para health/métricas) e sem banco (stateless).
+#
+# - Réplicas: SEM "replicas" (regra 4 do deploy.sh): o KEDA (scaledobject.yaml) é o dono, 1-2.
+# - Recreate (decisão D5 do infra/vm/README.md): pod em terminação conta na quota até o fim do
+#   grace; com rolling update, velho + novo somariam. A fila segura as mensagens nesse meio tempo.
+# - terminationGracePeriodSeconds 330 > shutdown do app (300 s): o SIGTERM para de consumir e
+#   deixa o vídeo em andamento terminar (contratos.md, seção 9). progressDeadlineSeconds 480
+#   precisa ser maior que o grace (regra 5 do deploy.sh).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video-worker
+  labels:
+    app.kubernetes.io/name: video-worker
+    app.kubernetes.io/component: worker
+spec:
+  revisionHistoryLimit: 3
+  progressDeadlineSeconds: 480
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: video-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: video-worker
+        app.kubernetes.io/component: worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9464"
+        prometheus.io/path: /metrics
+        fiapx.io/metrics-auth: bearer
+    spec:
+      priorityClassName: fiapx-lote      # primeiro a sair sob pressão: a mensagem volta para a fila
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 330
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000                    # /work (emptyDir) e os Secrets ficam com o grupo 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: video-worker
+          image: ghcr.io/arthurfcs98/fiapx-video-worker
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 9464
+          envFrom:
+            - configMapRef:
+                name: video-worker-config
+          env:
+            - name: RABBITMQ_URL_FILE
+              value: /run/secrets/fiapx/RABBITMQ_URL
+            - name: S3_ACCESS_KEY_ID_FILE
+              value: /run/secrets/fiapx/S3_ACCESS_KEY_ID
+            - name: S3_SECRET_ACCESS_KEY_FILE
+              value: /run/secrets/fiapx/S3_SECRET_ACCESS_KEY
+            - name: METRICS_TOKEN_FILE
+              value: /run/secrets/fiapx/METRICS_TOKEN
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets/fiapx
+              readOnly: true
+            - name: work
+              mountPath: /work
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: "1"                    # teto do ffmpeg: 1 vCPU por réplica, 2 réplicas no máximo
+              memory: 512Mi
+              ephemeral-storage: 2560Mi   # /work (2 GiB) + logs + /tmp
+          startupProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            # O servidor da 9464 roda no mesmo event loop do worker: se ele travar, a probe falha.
+            # O ffmpeg roda em processo filho, então um vídeo longo não derruba a probe.
+            httpGet:
+              path: /health
+              port: metrics
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true     # só /work e /tmp são graváveis
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: secrets
+          secret:
+            secretName: fiapx-video-worker
+            defaultMode: 0440
+        - name: work
+          emptyDir:
+            sizeLimit: 2Gi                   # passou disso, o kubelet despeja o pod (não enche o disco da VM)
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

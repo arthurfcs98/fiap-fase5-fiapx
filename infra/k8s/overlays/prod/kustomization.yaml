@@ -1,0 +1,22 @@
+# =============================================================================
+# overlays/prod — estado desejado do namespace fiapx na VM compartilhada. É ESTE diretório que o
+# infra/vm/deploy.sh renderiza (OVERLAY=infra/k8s/overlays/prod), trocando as imagens dos
+# apps pelo digest de sha-<7>. Não use "kubectl apply -k" à mão na VM: o caminho oficial
+# é o deploy (CD). Conferência local: infra/k8s/scripts/validate.sh.
+#
+# Fica de fora (criado por root, nunca pelo CD): Namespace, ResourceQuota, LimitRange,
+# PriorityClasses (infra/vm/k8s/namespace-guard.yaml), RBAC da observabilidade
+# (infra/vm/k8s/observability-rbac.yaml) e Secrets (infra/k8s/scripts/bootstrap-secrets.sh).
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fiapx
+
+resources:
+  - ../../base
+  - ../../observability
+
+patches:
+  # E-mail real (Resend) só em produção: a chave vem do Secret, por arquivo.
+  - path: notification-resend.yaml

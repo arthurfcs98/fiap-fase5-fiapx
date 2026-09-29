@@ -1,0 +1,49 @@
+# =============================================================================
+# overlays/local — o mesmo estado da produção num K3s local (k3d), para testar os manifestos
+# antes do deploy: infra/k8s/scripts/smoke-k3d.sh.
+#
+# Diferenças para a produção (só o que o ambiente exige):
+#   - imagens dos apps com a tag "local" (build do compose: make images), importadas no k3d;
+#   - host do Ingress fiapx.localhost (porta 8081 do Mac -> load balancer do k3d -> Traefik);
+#   - e-mail em modo "log" (sem Resend, sem Mailpit no cluster).
+# O namespace, a quota, o LimitRange, as PriorityClasses e o KEDA vêm dos MESMOS arquivos do
+# SRE (infra/vm/k8s), aplicados pelo smoke antes deste overlay.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fiapx
+
+resources:
+  - ../../base
+  - ../../observability
+
+images:
+  - name: ghcr.io/arthurfcs98/fiapx-video-api
+    newTag: local
+  - name: ghcr.io/arthurfcs98/fiapx-video-worker
+    newTag: local
+  - name: ghcr.io/arthurfcs98/fiapx-notification-service
+    newTag: local
+
+configMapGenerator:
+  - name: video-api-config
+    behavior: merge
+    literals:
+      - PUBLIC_BASE_URL=http://fiapx.localhost:8081
+      - CORS_ORIGIN=http://fiapx.localhost:8081
+  - name: notification-service-config
+    behavior: merge
+    literals:
+      - EMAIL_PROVIDER=log
+      - EMAIL_FROM=FIAP Frames <nao-responda@fiapx.local>
+      - PUBLIC_BASE_URL=http://fiapx.localhost:8081
+
+patches:
+  - target:
+      kind: Ingress
+      name: video-api
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: fiapx.localhost

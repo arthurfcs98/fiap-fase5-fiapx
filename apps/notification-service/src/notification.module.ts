@@ -1,6 +1,9 @@
-import { TypedConfigModule } from '@fiapx/common';
+import { createTypeOrmOptions, TypedConfigModule } from '@fiapx/common';
+import { MessagingModule } from '@fiapx/messaging';
 import { createPinoConfig, MetricsServerModule } from '@fiapx/observability';
 import { Module } from '@nestjs/common';
+import { ScheduleModule } from '@nestjs/schedule';
+import { TypeOrmModule } from '@nestjs/typeorm';
 import { LoggerModule } from 'nestjs-pino';
 import type { NotificationConfig } from './config/notification.config';
 import {
@@ -8,10 +11,15 @@ import {
   notificationConfigSchema,
   SERVICE_NAME,
 } from './config/notification.config';
+import { notificationDataSourceInput } from './database/notification-data-source';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 
 /**
- * notification-service (E0: esqueleto). Sem HTTP público: só o servidor interno de /health e
- * /metrics. A partir da E5 entram o consumidor de `notification.events` e o envio de e-mail.
+ * notification-service: no public HTTP, only the internal /health and /metrics server.
+ * Consumes `notification.events` (e-mail on `video.failed`/`video.completed`, anonymization on
+ * `user.deleted`) and runs the daily LGPD retention job. The schema comes only from the
+ * `migrate` one-shot (`synchronize: false`). Messaging does not block the boot while RabbitMQ
+ * is down; the database does (TypeORM retries, then the process exits and is restarted).
  */
 @Module({
   imports: [
@@ -35,6 +43,20 @@ import {
         token: config.METRICS_TOKEN,
       }),
     }),
+    MessagingModule.forRootAsync({
+      inject: [NOTIFICATION_CONFIG],
+      useFactory: (config: NotificationConfig) => ({
+        url: config.RABBITMQ_URL,
+        connectionName: SERVICE_NAME,
+      }),
+    }),
+    TypeOrmModule.forRootAsync({
+      inject: [NOTIFICATION_CONFIG],
+      useFactory: (config: NotificationConfig) =>
+        createTypeOrmOptions(config, notificationDataSourceInput()),
+    }),
+    ScheduleModule.forRoot(),
+    NotificationsModule,
   ],
 })
 export class NotificationModule {}

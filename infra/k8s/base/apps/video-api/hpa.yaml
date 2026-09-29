@@ -1,0 +1,26 @@
+# HPA do video-api: 1 a 2 réplicas por CPU (70% do request). O teto de 2 vem da decisão D6
+# do infra/vm/README.md (a quota do namespace foi calculada com esse máximo).
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: video-api
+  labels:
+    app.kubernetes.io/name: video-api
+    app.kubernetes.io/component: api
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: video-api
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300   # evita sobe-e-desce durante um pico de uploads

@@ -6,16 +6,17 @@ import type {
   VideoFailedEvent,
   VideoUploadedEvent,
 } from '../events/video.events';
+import {
+  FIXTURE_CORRELATION_ID as CORRELATION_ID,
+  FIXTURE_OCCURRED_AT as OCCURRED_AT,
+  FIXTURE_USER_ID as USER_ID,
+  FIXTURE_VIDEO_ID as VIDEO_ID,
+} from './fixture-ids';
 
 /**
  * Fixtures versionadas (v1) de cada evento: produtor e consumidor testam contra elas.
  * Também servem de exemplo nos testes de integração/BDD das próximas etapas.
  */
-const USER_ID = '1a2b3c4d-5e6f-4a0b-9c1d-2e3f4a5b6c7d';
-const VIDEO_ID = '6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b';
-const CORRELATION_ID = 'c0a8016e-4b1f-4f3e-9d2a-7a1b2c3d4e5f';
-const OCCURRED_AT = '2026-10-10T12:00:00.000Z';
-
 export const videoUploadedFixture: VideoUploadedEvent = {
   id: '0f8e7d6c-5b4a-4938-8271-605f4e3d2c1b',
   type: 'video.uploaded',

@@ -1,19 +1,11 @@
 import { z } from 'zod';
 import { eventEnvelopeSchema } from '../envelope';
+import { EVENT_TYPES } from './event-types';
 
 /**
  * Eventos do fluxo de vídeo (docs/arquitetura/contratos.md, seção 2 — "Eventos").
- * O `type` de cada evento é igual à routing key usada no `fiapx.events`.
+ * O `type` de cada evento é igual à routing key usada no `fiapx.events` ({@link EVENT_TYPES}).
  */
-export const EVENT_TYPES = {
-  videoUploaded: 'video.uploaded',
-  processingStarted: 'video.processing.started',
-  processingCompleted: 'video.processing.completed',
-  processingFailed: 'video.processing.failed',
-  videoFailed: 'video.failed',
-  videoCompleted: 'video.completed',
-} as const;
-
 const errorCode = z.string().regex(/^[A-Z]\d{4}$/, 'código de erro no formato P0001');
 const objectKey = z.string().min(1).max(300);
 const bucket = z.string().min(3).max(63);
@@ -55,7 +47,11 @@ export const processingFailedPayload = z.object({
   errorMessage: z.string().max(500),
 });
 
-/** video-api (outbox) → notification-service (e-mail de falha, obrigatório). */
+/**
+ * video-api (outbox) → notification-service (e-mail de falha, obrigatório).
+ * `userId` é obrigatório: vira `notifications.user_id`, usado para anonimizar as notificações
+ * quando chega `user.deleted` (contratos.md, seção 12).
+ */
 export const videoFailedPayload = z.object({
   videoId: z.uuid(),
   userId: z.uuid(),
@@ -66,7 +62,7 @@ export const videoFailedPayload = z.object({
   errorMessage: z.string().max(500),
 });
 
-/** video-api (outbox) → notification-service (e-mail de sucesso, opcional). */
+/** video-api (outbox) → notification-service (e-mail de sucesso, opcional). `userId` como acima. */
 export const videoCompletedPayload = z.object({
   videoId: z.uuid(),
   userId: z.uuid(),
@@ -105,12 +101,6 @@ export const processingEvent = z.discriminatedUnion('type', [
   processingFailedEvent,
 ]);
 
-/** Mensagens que chegam em `notification.events`. */
-export const notificationEvent = z.discriminatedUnion('type', [
-  videoFailedEvent,
-  videoCompletedEvent,
-]);
-
 export type VideoUploadedEvent = z.infer<typeof videoUploadedEvent>;
 export type ProcessingStartedEvent = z.infer<typeof processingStartedEvent>;
 export type ProcessingCompletedEvent = z.infer<typeof processingCompletedEvent>;
@@ -118,4 +108,3 @@ export type ProcessingFailedEvent = z.infer<typeof processingFailedEvent>;
 export type VideoFailedEvent = z.infer<typeof videoFailedEvent>;
 export type VideoCompletedEvent = z.infer<typeof videoCompletedEvent>;
 export type ProcessingEvent = z.infer<typeof processingEvent>;
-export type NotificationEvent = z.infer<typeof notificationEvent>;

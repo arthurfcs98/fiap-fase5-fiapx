@@ -1,0 +1,31 @@
+# =============================================================================
+# infra/k8s/jobs — Jobs one-shot rodados pelo deploy.sh ANTES do rollout dos apps
+# (infra/vm/README.md, seção 6.6, regra 6):
+#
+#   camada de dados (tier=data) -> fase setup -> fase migrate -> resto do estado desejado
+#
+# - fiapx.io/phase=setup:   garage-init (layout, chaves, buckets, quotas) e rabbitmq-init
+#                           (usuário do KEDA, limites por fila);
+# - fiapx.io/phase=migrate: migrações TypeORM do video-api e do notification-service.
+#
+# O deploy.sh renderiza esta pasta com nameSuffix "-<sha7>" (um Job novo por release) e troca
+# as imagens dos apps pelo digest. Regras: backoffLimit 0, activeDeadlineSeconds < 300,
+# ttlSecondsAfterFinished e comandos idempotentes. Os scripts dos Jobs de setup ficam em
+# ConfigMaps da camada de dados (base/data), aplicados antes desta fase.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: fiapx
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: fiapx
+    includeSelectors: false
+    includeTemplates: true
+
+resources:
+  - garage-init.yaml
+  - rabbitmq-init.yaml
+  - video-api-migrate.yaml
+  - notification-migrate.yaml

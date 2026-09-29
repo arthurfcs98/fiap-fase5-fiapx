@@ -1,0 +1,112 @@
+# =============================================================================
+# Alertas do FIAP X (contratos.md, seção 13). Os nomes são do contrato; não renomear.
+# Aparecem no Grafana (Alerting -> Alert rules, "Data source-managed") e em
+# http://localhost:9090/alerts (port-forward). Não há Alertmanager (orçamento de memória da
+# VM): o alerta é visto no Grafana/Prometheus. Passo a passo de cada um:
+# docs/observabilidade.md, seção "Alertas".
+# =============================================================================
+groups:
+  - name: fiapx-alertas
+    rules:
+      # Taxa de queima do orçamento de erro (SLO 99,5% -> orçamento 0,5% em 7 dias), em duas
+      # janelas (padrão do Google SRE Workbook): 14,4x em 1 h confirmada em 5 min (nesse ritmo
+      # o orçamento de 7 dias acaba em ~12 h) ou 6x em 6 h confirmada em 30 min (~28 h). A
+      # janela curta faz o alerta parar logo que o problema some.
+      - alert: FiapxApiErrorRateHigh
+        expr: |
+          (
+            fiapx:slo_availability:error_ratio_rate1h > (14.4 * 0.005)
+            and
+            fiapx:slo_availability:error_ratio_rate5m > (14.4 * 0.005)
+          )
+          or
+          (
+            fiapx:slo_availability:error_ratio_rate6h > (6 * 0.005)
+            and
+            fiapx:slo_availability:error_ratio_rate30m > (6 * 0.005)
+          )
+        for: 2m
+        labels:
+          severity: critical
+          slo: disponibilidade-api
+        annotations:
+          summary: "API com muitos erros 5xx"
+          description: "{{ $value | humanizePercentage }} das requisições da API com 5xx: o orçamento de erro de 0,5% (7 dias) está queimando rápido demais."
+          runbook: "docs/observabilidade.md#fiapxapierrorratehigh"
+
+      - alert: FiapxUploadLatencyHigh
+        expr: fiapx:slo_upload_latency:p95_rate10m > 5
+        for: 10m
+        labels:
+          severity: warning
+          slo: aceite-upload
+        annotations:
+          summary: "Upload lento (p95 acima de 5 s)"
+          description: "p95 de POST /api/videos em {{ $value | humanizeDuration }} nos últimos 10 min (SLO: < 5 s)."
+          runbook: "docs/observabilidade.md#fiapxuploadlatencyhigh"
+
+      - alert: FiapxProcessingSlow
+        expr: fiapx:slo_processing:p95_rate30m > 120
+        for: 15m
+        labels:
+          severity: warning
+          slo: tempo-processamento
+        annotations:
+          summary: "Processamento de vídeo lento (p95 acima de 120 s)"
+          description: "p95 do processamento em {{ $value | humanizeDuration }} nos últimos 30 min (SLO: < 120 s para vídeos de até 60 s)."
+          runbook: "docs/observabilidade.md#fiapxprocessingslow"
+
+      # DLQ com mensagem = uma requisição que o sistema não conseguiu processar sozinho.
+      - alert: FiapxDlqNotEmpty
+        expr: sum by (queue) (rabbitmq_queue_messages{queue=~".*dlq"}) > 0
+        for: 1m
+        labels:
+          severity: critical
+          slo: nenhuma-requisicao-perdida
+        annotations:
+          summary: "DLQ {{ $labels.queue }} com mensagens"
+          description: "{{ $value }} mensagem(ns) parada(s) em {{ $labels.queue }}: esgotaram os retries ou são inválidas. Inspecione e faça o redrive."
+          runbook: "docs/observabilidade.md#fiapxdlqnotempty"
+
+      # Todas as réplicas do api leem a mesma tabela: max e não sum.
+      - alert: FiapxOutboxBacklog
+        expr: max(fiapx_outbox_pending) >= 100
+        for: 5m
+        labels:
+          severity: critical
+          slo: nenhuma-requisicao-perdida
+        annotations:
+          summary: "Outbox acumulando eventos"
+          description: "{{ $value }} eventos pendentes no outbox há mais de 5 min (RabbitMQ fora ou publisher travado)."
+          runbook: "docs/observabilidade.md#fiapxoutboxbacklog"
+
+      - alert: FiapxQueueBacklogHigh
+        expr: sum(rabbitmq_queue_messages_ready{queue="worker.video-uploaded"}) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fila worker.video-uploaded acumulando"
+          description: "{{ $value }} vídeos esperando há mais de 10 min. Confira se o KEDA escalou o worker (máx. 2 réplicas) e se o worker está consumindo."
+          runbook: "docs/observabilidade.md#fiapxqueuebackloghigh"
+
+      # O KEDA mantém no mínimo 1 worker: nenhum respondendo = ninguém processa vídeo.
+      - alert: FiapxWorkerDown
+        expr: absent(up{job="fiapx-services", app="video-worker"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Nenhum video-worker no ar"
+          description: "Nenhuma réplica do video-worker respondeu à coleta de métricas nos últimos 5 min."
+          runbook: "docs/observabilidade.md#fiapxworkerdown"
+
+      - alert: FiapxTargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Alvo {{ $labels.job }}/{{ $labels.instance }} fora"
+          description: "O Prometheus não consegue coletar {{ $labels.job }} em {{ $labels.instance }} ({{ $labels.pod }}) há 5 min."
+          runbook: "docs/observabilidade.md#fiapxtargetdown"

@@ -1,0 +1,53 @@
+# Camada de dados: Postgres, RabbitMQ, Redis e Garage (+ Services, ConfigMaps e PVCs).
+#
+# fiapx.io/tier=data: o deploy.sh aplica ESTES objetos primeiro e espera os StatefulSets
+# (infra/vm/deploy.sh, apply_and_verify). Só depois roda os Jobs de setup/migrate e o resto.
+# Por isso os scripts dos Jobs de setup (garage-init, rabbitmq-init) também moram aqui: eles
+# precisam existir antes dos Jobs.
+#
+# Imagens de infra: tag + digest (mesmas do compose.yaml). Ao atualizar, trocar as duas lá e aqui.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      fiapx.io/tier: data
+    includeSelectors: false
+    includeTemplates: true
+
+resources:
+  - postgres/service.yaml
+  - postgres/statefulset.yaml
+  - rabbitmq/service.yaml
+  - rabbitmq/statefulset.yaml
+  - redis/service.yaml
+  - redis/deployment.yaml
+  - garage/service.yaml
+  - garage/statefulset.yaml
+
+configMapGenerator:
+  # Cópia de infra/postgres/init (o kustomize não lê arquivos fora da pasta dele);
+  # scripts/validate.sh falha se as duas cópias divergirem.
+  - name: postgres-init
+    files:
+      - postgres/init/00-create-databases.sh
+  - name: rabbitmq-config
+    files:
+      - rabbitmq/30-fiapx.conf
+  # Cópia de infra/garage/garage.toml (mesma conferência no validate.sh).
+  - name: garage-config
+    files:
+      - garage/garage.toml
+  # Scripts dos Jobs de setup (infra/k8s/jobs). Nome FIXO (sem hash): os Jobs ficam em outra
+  # kustomization, que não enxerga o nome com hash; cada release cria Jobs novos que leem a
+  # versão atual.
+  - name: fiapx-garage-init
+    files:
+      - garage/garage-init.mjs
+    options:
+      disableNameSuffixHash: true
+  - name: fiapx-rabbitmq-init
+    files:
+      - rabbitmq/rabbitmq-init.mjs
+    options:
+      disableNameSuffixHash: true

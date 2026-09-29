@@ -1,0 +1,56 @@
+# Site do FIAP X no Caddy compartilhado da VM (/opt/edge/sites/fiapx.caddy).
+# Instalado por infra/vm/30-ingress.sh --caddy: valida primeiro num container descartável, depois
+# no edge-caddy, e aplica com "caddy reload" (sem restart). Se algo falhar, volta o arquivo anterior.
+#
+# Caminho: Cloudflare (proxied) -> edge-caddy :443 (TLS Let's Encrypt, HTTP-01) -> 172.18.0.1:30080.
+# 172.18.0.1 é o gateway da rede docker "borda" (um IP do próprio host). O K3s só publica o
+# NodePort 30080 do Traefik nesse IP (kube-proxy --nodeport-addresses), nunca no IP público.
+#
+# TLS de ponta a ponta: a zona tem uma Configuration Rule "SSL: Full (strict)" para este host
+# (criada em 2026-09-28). A Cloudflare fala HTTPS com a origem e confere o certificado do Caddy.
+#
+# O "http://" do endereço e o @texto_puro abaixo são SOBRA do modo Flexible (a Cloudflare falava
+# HTTP com a origem; sem o bloco http://, o redirect do Caddy virava loop 308). Com o Full (strict)
+# eles são REMOVÍVEIS: trocar a linha do endereço por "https://fiapx.asdevit.com {" e apagar o
+# @texto_puro e o redir. O redirect automático do Caddy passa a fazer o mesmo (308 para https:// e
+# o desafio ACME HTTP-01 na porta 80). Ficam por ora porque são inofensivos e protegem contra uma
+# volta acidental ao Flexible (o site continua no ar, sem loop). Remover = editar aqui + 30 --caddy --yes.
+http://fiapx.asdevit.com, https://fiapx.asdevit.com {
+	# Visitante em http:// (ou alguém falando direto com a origem em HTTP) -> 308 para https://.
+	# Passa sem redirect: o desafio HTTP-01 do Let's Encrypt e o pedido que a Cloudflare repassaria
+	# em HTTP depois de receber em HTTPS (só no modo Flexible, X-Forwarded-Proto: https).
+	# Forjar o X-Forwarded-Proto direto na origem só "engana" a própria conexão de quem forja.
+	@texto_puro {
+		protocol http
+		not header X-Forwarded-Proto https
+		not path /.well-known/acme-challenge/*
+	}
+	redir @texto_puro https://{host}{uri} 308
+
+	encode zstd gzip
+	header -Server
+
+	# Mesmo teto da Cloudflare (plano free). O video-api recusa acima de MAX_FILE_MB (95).
+	request_body {
+		max_size 100MB
+	}
+
+	# /metrics nunca sai para a internet: o Prometheus raspa por dentro do cluster.
+	@metrics path /metrics /metrics/*
+	respond @metrics 404
+
+	reverse_proxy 172.18.0.1:30080 {
+		# {client_ip} já é o IP real do visitante: o bloco global confia na Cloudflare
+		# (trusted_proxies + CF-Connecting-IP).
+		header_up X-Real-IP {client_ip}
+		# Colapsa a cadeia "visitante, borda-CF" num único IP. O Traefik só confia em
+		# X-Forwarded-* vindos de 10.42.0.1 (o NodePort faz SNAT para o IP da cni0).
+		header_up X-Forwarded-For {client_ip}
+		# Downloads (zip) e respostas longas saem sem buffer.
+		flush_interval -1
+		transport http {
+			# Se o K3s estiver fora, o Caddy devolve 502 rápido em vez de segurar a conexão.
+			dial_timeout 3s
+		}
+	}
+}

@@ -1,5 +1,10 @@
 import { AppError } from './app-error';
-import { isRetryableError, NonRetryableError, RetryableError } from './processing-errors';
+import {
+  isNonRetryableError,
+  isRetryableError,
+  NonRetryableError,
+  RetryableError,
+} from './processing-errors';
 
 describe('RetryableError', () => {
   it('marca a falha como transitória e preserva a causa', () => {
@@ -30,5 +35,14 @@ describe('NonRetryableError', () => {
   it('isRetryableError é falso para erros comuns', () => {
     expect(isRetryableError(new Error('x'))).toBe(false);
     expect(isRetryableError('x')).toBe(false);
+  });
+});
+
+describe('isNonRetryableError', () => {
+  it('reconhece só NonRetryableError', () => {
+    const appError = new AppError(422, 'NO_FRAMES', 'P0002', 'Sem frames.');
+    expect(isNonRetryableError(new NonRetryableError(appError))).toBe(true);
+    expect(isNonRetryableError(new RetryableError('x'))).toBe(false);
+    expect(isNonRetryableError(undefined)).toBe(false);
   });
 });

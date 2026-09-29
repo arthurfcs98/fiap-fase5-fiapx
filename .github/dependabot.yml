@@ -9,6 +9,10 @@ updates:
     groups:
       github-actions:
         patterns: ["*"]
+    # Majors (Node 26, Nest 12, Postgres 18, Redis 8...) só com decisão explícita: fora do escopo da entrega.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: ci
 
@@ -17,6 +21,10 @@ updates:
     directory: /docker
     schedule:
       interval: weekly
+    # Majors (Node 26, Nest 12, Postgres 18, Redis 8...) só com decisão explícita: fora do escopo da entrega.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: chore
 
@@ -25,6 +33,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Majors (Node 26, Nest 12, Postgres 18, Redis 8...) só com decisão explícita: fora do escopo da entrega.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: chore
 
@@ -39,5 +51,9 @@ updates:
       dev-dependencies:
         dependency-type: development
         update-types: [minor, patch]
+    # Majors (Node 26, Nest 12, Postgres 18, Redis 8...) só com decisão explícita: fora do escopo da entrega.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: chore

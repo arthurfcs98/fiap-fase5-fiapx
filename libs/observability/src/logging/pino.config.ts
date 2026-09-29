@@ -5,6 +5,8 @@ import type { DestinationStream } from 'pino';
 import { destination, stdTimeFunctions } from 'pino';
 import type { Options as PinoHttpOptions } from 'pino-http';
 import { CORRELATION_ID_HEADER, getCorrelationId, resolveCorrelationId } from '../correlation';
+import { matchesPathPrefix } from '../http/path-prefix';
+import { LOG_REDACT_CENSOR, REDACTED_PATHS } from './redaction';
 
 export interface PinoConfigOptions {
   /** Nome do serviço, gravado em todo log (`service`). */
@@ -25,36 +27,42 @@ export const DEFAULT_IGNORED_PATHS: readonly string[] = [
   '/api/docs',
 ];
 
-/**
- * Campos mascarados em qualquer log (headers de auth, cookies, senhas, tokens), até dois
- * níveis abaixo da raiz (ex.: `req.body.password`, `user.credentials.token`).
- */
-export const REDACTED_PATHS: readonly string[] = [
-  'req.headers.authorization',
-  'req.headers.cookie',
-  'res.headers["set-cookie"]',
-  'req.body.password',
-  'authorization',
-  'password',
-  '*.password',
-  '*.*.password',
-  'token',
-  '*.token',
-  '*.*.token',
-  'accessToken',
-  '*.accessToken',
-  '*.*.accessToken',
-  'secret',
-  '*.secret',
-  '*.*.secret',
-];
-
 type RequestWithId = IncomingMessage & { id?: unknown };
 
 /** Adiciona o correlation id do AsyncLocalStorage a todo log emitido dentro do contexto. */
 export function correlationMixin(): Record<string, string> {
   const correlationId = getCorrelationId();
   return correlationId ? { correlationId } : {};
+}
+
+/** Standard-serialized request (pino-std-serializers) received by a custom serializer. */
+interface SerializedRequest {
+  id?: unknown;
+  method?: string;
+  url?: string;
+  remoteAddress?: string;
+}
+
+/**
+ * Access-log request: id, method, path and client address only. The query string is dropped
+ * (it carries the HMAC signature of the download links, a 5-minute bearer credential) and so
+ * are the headers (they may carry personal data; Authorization/Cookie were already masked).
+ */
+export function serializeAccessRequest(req: SerializedRequest): Record<string, unknown> {
+  return {
+    id: req.id,
+    method: req.method,
+    url: req.url?.split('?', 1)[0],
+    remoteAddress: req.remoteAddress,
+  };
+}
+
+/**
+ * Access-log response: status code only. Response headers are dropped: `Content-Disposition`
+ * carries the file name the user chose (personal data, contratos.md section 12).
+ */
+export function serializeAccessResponse(res: { statusCode?: number }): Record<string, unknown> {
+  return { statusCode: res.statusCode };
 }
 
 /** 5xx/erro → error, 4xx → warn, demais → info. */
@@ -72,8 +80,7 @@ export function shouldSkipAccessLog(
   url: string | undefined,
   ignorePaths: readonly string[],
 ): boolean {
-  const path = (url ?? '').split('?')[0] ?? '';
-  return ignorePaths.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+  return matchesPathPrefix(url, ignorePaths);
 }
 
 /**
@@ -83,7 +90,10 @@ export function shouldSkipAccessLog(
  * - `correlationId` em todo log: no acesso HTTP vem do `req.id` (header `x-correlation-id`
  *   recebido ou UUID novo, devolvido na resposta); nos demais, do AsyncLocalStorage;
  * - sem log de acesso para health/métricas/docs; 5xx em `error`, 4xx em `warn`;
- * - mascaramento de Authorization, cookies, senhas e tokens.
+ * - mascaramento de Authorization, cookies, senhas, tokens e dados pessoais (`REDACTED_PATHS`,
+ *   LGPD, contratos.md seção 12);
+ * - access log reduced to id/method/path/client address and the status code (no query string,
+ *   no headers): see `serializeAccessRequest` and `serializeAccessResponse`.
  */
 export function createPinoHttpOptions(options: PinoConfigOptions): PinoHttpOptions {
   const ignorePaths = options.ignorePaths ?? DEFAULT_IGNORED_PATHS;
@@ -99,7 +109,8 @@ export function createPinoHttpOptions(options: PinoConfigOptions): PinoHttpOptio
     timestamp: stdTimeFunctions.isoTime,
     formatters: { level: (label: string) => ({ level: label }) },
     mixin: correlationMixin,
-    redact: { paths: [...REDACTED_PATHS], censor: '[REDACTED]' },
+    redact: { paths: [...REDACTED_PATHS], censor: LOG_REDACT_CENSOR },
+    serializers: { req: serializeAccessRequest, res: serializeAccessResponse },
     genReqId: (req: IncomingMessage, res: ServerResponse) => {
       const correlationId = resolveCorrelationId(req.headers[CORRELATION_ID_HEADER]);
       res.setHeader(CORRELATION_ID_HEADER, correlationId);

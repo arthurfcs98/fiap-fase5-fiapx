@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#2447a8"/>
+    </linearGradient>
+  </defs>
+  <!-- Fundo azul arredondado -->
+  <rect width="64" height="64" rx="16" fill="url(#bg)"/>
+  <!-- Fotograma (película) com furos laterais -->
+  <rect x="13" y="15" width="38" height="34" rx="6" fill="#ffffff"/>
+  <g fill="#2f5bd3" opacity="0.35">
+    <rect x="16" y="19" width="4" height="4" rx="1"/>
+    <rect x="16" y="30" width="4" height="4" rx="1"/>
+    <rect x="16" y="41" width="4" height="4" rx="1"/>
+    <rect x="44" y="19" width="4" height="4" rx="1"/>
+    <rect x="44" y="30" width="4" height="4" rx="1"/>
+    <rect x="44" y="41" width="4" height="4" rx="1"/>
+  </g>
+  <!-- Play -->
+  <path d="M28 24.5 L39 32 L28 39.5 Z" fill="#2f5bd3" stroke="#2f5bd3" stroke-width="2" stroke-linejoin="round"/>
+</svg>

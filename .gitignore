@@ -37,3 +37,6 @@ kubeconfig*
 .kube/
 *.tfvars
 !*.tfvars.example
+
+# Vídeos de teste gerados por tests/fixtures/generate.sh (os exemplos versionados ficam em examples/)
+tests/fixtures/*.mp4

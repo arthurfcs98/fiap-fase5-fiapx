@@ -1,0 +1,26 @@
+# =============================================================================
+# infra/k8s/base — estado desejado do FIAP X SEM a observabilidade (ela é outro "pacote",
+# infra/k8s/observability, que os overlays incluem).
+#
+# Regras do deploy.sh (infra/vm/README.md, seção 6.6) que valem para tudo aqui:
+#   - sem Namespace, Secret, RBAC, ResourceQuota, LimitRange ou CRD (quem cria é o root);
+#   - todo objeto com app.kubernetes.io/part-of=fiapx (este arquivo garante);
+#   - camada de dados com fiapx.io/tier=data (data/kustomization.yaml garante);
+#   - apps como ghcr.io/arthurfcs98/fiapx-<app> SEM tag (o deploy injeta o digest).
+#
+# O namespace (fiapx) é definido nos overlays, não aqui.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  # includeSelectors: false -> não entra no selector (imutável) dos Deployments/StatefulSets;
+  # includeTemplates: true  -> entra nos pods (o deploy.sh espera rollouts por esse rótulo).
+  - pairs:
+      app.kubernetes.io/part-of: fiapx
+    includeSelectors: false
+    includeTemplates: true
+
+resources:
+  - data
+  - apps

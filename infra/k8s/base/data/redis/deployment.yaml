@@ -1,0 +1,104 @@
+# Redis 7 (mesma imagem do compose): throttling, cache da Idempotency-Key e anti-replay.
+# SEM persistência (tudo aqui é efêmero por natureza), por isso Deployment e não StatefulSet,
+# e nenhum PVC. Com senha (requirepass) e teto de memória (maxmemory 32mb + LRU).
+#
+# A senha não vai na linha de comando (apareceria no "ps"): o container grava um redis.conf
+# num emptyDir em memória (tmpfs, some com o pod) e sobe o redis-server com ele.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+        app.kubernetes.io/component: cache
+    spec:
+      priorityClassName: fiapx-dados
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999                     # usuário "redis" da imagem alpine
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              umask 077
+              printf 'requirepass %s\n' "$REDIS_PASSWORD" > /run/redis/redis.conf
+              unset REDIS_PASSWORD
+              exec redis-server /run/redis/redis.conf \
+                --bind 0.0.0.0 --protected-mode no \
+                --save '' --appendonly no \
+                --maxmemory 32mb --maxmemory-policy allkeys-lru
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fiapx-redis
+                  key: REDIS_PASSWORD
+            # Só para as probes (redis-cli lê a senha daqui).
+            - name: REDISCLI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: fiapx-redis
+                  key: REDIS_PASSWORD
+          ports:
+            - name: redis
+              containerPort: 6379
+          volumeMounts:
+            - name: run
+              mountPath: /run/redis
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -h 127.0.0.1 ping | grep -q PONG"]
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -h 127.0.0.1 ping | grep -q PONG"]
+            periodSeconds: 10
+            timeoutSeconds: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: data
+          emptyDir:
+            sizeLimit: 16Mi

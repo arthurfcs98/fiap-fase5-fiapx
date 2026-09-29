@@ -1,0 +1,37 @@
+# Entrada HTTP: Cloudflare -> edge-caddy (TLS) -> Traefik (NodePort 30080) -> este Ingress.
+# Classe "traefik" (infra/vm/README.md, decisão D1: o ingress-nginx foi aposentado).
+#
+# Upload de até 95 MB: o Traefik não tem limite de corpo por padrão (sem middleware
+# "buffering") e o 30-ingress.sh sobe o readTimeout do entrypoint para 600 s. Por isso não
+# há anotações de body-size/timeout aqui (elas eram do ingress-nginx).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: video-api
+  labels:
+    app.kubernetes.io/name: video-api
+    app.kubernetes.io/component: api
+  annotations:
+    # Só o entrypoint HTTP: o TLS termina no Caddy (websecure não é exposto).
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: fiapx.asdevit.com
+      http:
+        paths:
+          # /api: API REST, health e Swagger. /: frontend estático servido pelo próprio api.
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: video-api
+                port:
+                  name: http
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: video-api
+                port:
+                  name: http

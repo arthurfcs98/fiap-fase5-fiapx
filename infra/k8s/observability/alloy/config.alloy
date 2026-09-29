@@ -1,0 +1,116 @@
+// =============================================================================
+// Grafana Alloy: coleta os logs (stdout) dos pods do namespace fiapx e envia ao Loki.
+// Sucessor do Promtail (descontinuado). Sintaxe: https://grafana.com/docs/alloy/latest/
+//
+// Os logs são lidos pela API do Kubernetes (loki.source.kubernetes), e não pelos arquivos
+// do nó (/var/log/pods): o namespace fiapx roda com Pod Security "baseline", que proíbe
+// hostPath (infra/vm/k8s/namespace-guard.yaml). Permissão: Role fiapx-alloy (pods, pods/log)
+// em infra/vm/k8s/observability-rbac.yaml (aplicada pelo root).
+//
+// Rótulos no Loki (índice, baixa cardinalidade): namespace, app, level.
+// Structured metadata (não indexado, filtrável): correlationId, pod, container, service.
+// =============================================================================
+
+logging {
+	level  = "warn"
+	format = "logfmt"
+}
+
+// 1. Descoberta: os pods do namespace fiapx que rodam NESTE nó (o Alloy é um DaemonSet:
+//    cada pod dele cuida do próprio nó, então nenhum log é lido duas vezes).
+discovery.kubernetes "pods" {
+	role = "pod"
+
+	namespaces {
+		names = ["fiapx"]
+	}
+
+	selectors {
+		role  = "pod"
+		field = "spec.nodeName=" + sys.env("NODE_NAME")
+	}
+}
+
+// 2. Rótulos a partir dos metadados do pod.
+discovery.relabel "pods" {
+	targets = discovery.kubernetes.pods.targets
+
+	// Pod que já terminou (Job concluído) não tem mais o que ler.
+	rule {
+		source_labels = ["__meta_kubernetes_pod_phase"]
+		regex         = "Pending|Succeeded|Failed"
+		action        = "drop"
+	}
+
+	rule {
+		source_labels = ["__meta_kubernetes_namespace"]
+		target_label  = "namespace"
+	}
+
+	rule {
+		source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+		target_label  = "app"
+	}
+
+	// pod e container viram structured metadata no loki.process (não ficam como rótulo).
+	rule {
+		source_labels = ["__meta_kubernetes_pod_name"]
+		target_label  = "pod"
+	}
+
+	rule {
+		source_labels = ["__meta_kubernetes_pod_container_name"]
+		target_label  = "container"
+	}
+}
+
+// 3. Leitura dos logs pela API do Kubernetes (sem hostPath).
+loki.source.kubernetes "pods" {
+	targets    = discovery.relabel.pods.output
+	forward_to = [loki.process.pino.receiver]
+}
+
+// 4. Os apps logam JSON do pino (uma linha por evento): level em texto, time ISO-8601,
+//    service, correlationId. Linhas que não são JSON (Postgres, RabbitMQ) passam como estão.
+loki.process "pino" {
+	stage.json {
+		expressions = {
+			level         = "level",
+			correlationId = "correlationId",
+			service       = "service",
+		}
+	}
+
+	// Loki/Grafana entendem estes nomes de nível; o pino já usa os mesmos (trace..fatal).
+	stage.labels {
+		values = {
+			level = "",
+		}
+	}
+
+	// correlationId NÃO é rótulo (seria um stream por requisição): vai como structured
+	// metadata. Consulta: {namespace="fiapx"} | correlationId="<id>"
+	stage.structured_metadata {
+		values = {
+			correlationId = "",
+			service       = "",
+			pod           = "",
+			container     = "",
+		}
+	}
+
+	// pod/container já foram para structured metadata; job/instance são postos pelo
+	// loki.source.kubernetes e criariam um stream por pod a cada deploy.
+	stage.label_drop {
+		values = ["pod", "container", "job", "instance"]
+	}
+
+	forward_to = [loki.write.default.receiver]
+}
+
+// 5. Envio ao Loki (Service interno do mesmo namespace).
+loki.write "default" {
+	endpoint {
+		url = "http://loki:3100/loki/api/v1/push"
+	}
+}

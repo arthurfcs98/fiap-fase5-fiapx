@@ -15,8 +15,18 @@ com e-mail em caso de falha. Monorepo NestJS, deploy em K3s numa VM compartilhad
 - **Métricas:** `@prometheus-io/client` (sucessor oficial do `prom-client`), servidor interno na 9464.
   `MetricsServerModule.forRoot*` é **global**: importar só no módulo raiz; os demais injetam `METRICS_REGISTRY`.
 - **Health:** `@nestjs/terminus` (`/api/health/live` e `/api/health/ready`).
+- **Mensageria:** `amqplib` + `amqp-connection-manager` via `@fiapx/messaging` (`MessagingModule`
+  global, `MessageConsumers.start(def)`, porta `EVENT_PUBLISHER`). Nunca usar amqplib direto nos apps.
+- **Storage:** `@aws-sdk/client-s3` + `lib-storage` via `@fiapx/storage` (`StorageModule`, porta
+  `OBJECT_STORAGE`). **Banco:** TypeORM 1.x + `pg` com `createTypeOrmOptions` de `@fiapx/common`.
+- **Dependências:** todas as das etapas E3-E5 já estão no `package.json` (lista em
+  `docs/arquitetura/libs.md`). Não adicionar pacote sem alinhar com o lead.
 - **Infra local:** Postgres 16, RabbitMQ 4.3, Redis 7, Garage v2 (S3), Mailpit, via `compose.yaml`.
-- **Testes:** Jest 30 + ts-jest (um project por app/lib), supertest no E2E.
+- **Testes:** Jest 30 + ts-jest (um project por app/lib), supertest no E2E, Testcontainers na
+  integração (`*.int-spec.ts`, `npm run test:int`; o worker precisa de ffmpeg no PATH),
+  jest-cucumber no BDD (`tests/bdd`, features em pt-BR, contra o compose), k6 em `tests/load`.
+- **Hooks:** `simple-git-hooks` (instalado no `npm ci`) roda `scripts/git-hooks/pre-commit.sh`:
+  `gitleaks protect --staged` (`.gitleaks.toml`) + `lint-staged`.
 - **Lint:** ESLint 10 (flat config) + typescript-eslint (type-checked) + Prettier.
 
 ## Estrutura
@@ -24,8 +34,13 @@ com e-mail em caso de falha. Monorepo NestJS, deploy em K3s numa VM compartilhad
 ```
 apps/{video-api,video-worker,notification-service}/src
 libs/{common,observability,messaging,contracts,storage}/src   # aliases @fiapx/<lib>
+test/support/                    # @fiapx/testing (containers + waitFor), só para *.int-spec.ts
+tests/bdd/ tests/load/ tests/fixtures/   # BDD (jest-cucumber), k6, gerador de vídeos de teste
+examples/                        # vídeos pequenos versionados (usados pelo BDD, k6 e demos)
+scripts/demo/ scripts/git-hooks/ # roteiros de demonstração e o pre-commit
 docker/node-service.Dockerfile   compose.yaml   infra/{garage,postgres}   scripts/
 docs/arquitetura/contratos.md    # FONTE DA VERDADE de nomes (filas, eventos, erros, tabelas, env)
+docs/arquitetura/libs.md         # API pública das libs + exemplos (consumer, publish, storage, TypeORM)
 legacy/projeto-base/             # código Go original (não alterar)
 ```
 
@@ -41,7 +56,10 @@ npm run build         # ou build:<app>
 npm test              # todos os projects
 npm run test:cov      # cobertura por project (>= 80% em cada); -- apps/video-api para um só
 npm run test:e2e
-make up | down | down-v | logs | ps | smoke | images
+npm run test:int      # integração com RabbitMQ/Postgres/Garage reais (Testcontainers, precisa de Docker e ffmpeg)
+npm run test:bdd      # BDD contra o stack no ar (make test-bdd sobe o stack certo e roda)
+make up [WORKERS=3] | down | down-v | logs | ps | smoke | images | test-int
+make test-bdd | load [VUS=20 DURATION=30s] | demo-happy | demo-sad | fixtures
 ```
 
 ## Convenções
@@ -62,7 +80,17 @@ make up | down | down-v | logs | ps | smoke | images
   para a requisição inteira, inclusive o filtro de exceções. Consumidores de fila devem
   envolver o handler em `runWithCorrelation(id, fn)`.
 - **Código só de teste fora dos barrels:** fixtures em `@fiapx/contracts/fixtures`, fakes em
-  `@fiapx/storage/testing` (subpaths), para não entrarem no bundle de produção.
+  `@fiapx/storage/testing` e `@fiapx/messaging/testing` (subpaths), para não entrarem no bundle de
+  produção. Containers de integração em `@fiapx/testing` (`test/support`, fora de `src`).
+- **Mensageria:** consumidor = provider na camada `interfaces` que chama
+  `MessageConsumers.start({ queue: QUEUES.x, schema, handle, onPermanentFailure? })` no
+  `onApplicationBootstrap`. Falha transitória → lançar `RetryableError` (erro desconhecido também
+  vira retry); permanente → `NonRetryableError` (catálogo `ProcessingErrors`). Publicar só por
+  `EVENT_PUBLISHER` com `createEvent(type, payload, correlationId)`.
+- **Integração:** `apps/<app>/test/*.int-spec.ts` ou `libs/<lib>/test/*.int-spec.ts` entram
+  sozinhos no `jest.int.config.js`; imagens dos containers vêm do `compose.yaml`.
+- **Pacotes só ESM** (ex.: `file-type`): o Jest os converte para CommonJS pela lista
+  `ESM_ONLY_PACKAGES` do `jest.preset.js` (incluir as dependências ESM do pacote também).
 - **TypeScript:** `tsconfig.json` (IDE, lint, typecheck) inclui os tipos do Jest; o código de
   produção compila sem eles (`tsconfig.app.json`/`tsconfig.lib.json` e o 2º passo do `typecheck`,
   `tsconfig.build.json`). O Jest **não checa tipos** (`diagnostics: false` no `jest.preset.js`):
@@ -70,7 +98,13 @@ make up | down | down-v | logs | ps | smoke | images
   checagem de tipos (specs inclusive) é o `npm run typecheck`, no mesmo modo do build.
 - **Imports:** `import type` para tipos (obrigatório com `isolatedModules` + decorators).
 - **Testes:** todo código novo com teste unitário. Cobertura ≥ 80% por project, sem novas
-  exclusões (só `main.ts`, `*.module.ts` e `index.ts`).
+  exclusões (só `main.ts`, `*.module.ts` e `index.ts`). Comportamento visível de ponta a ponta
+  ganha cenário BDD em `tests/bdd/features` (pt-BR); o arquivo `99-*` confere que nenhum dado
+  pessoal aparece nos logs e precisa continuar sendo o último.
+- **Throttling:** `@ThrottleBy('register'|'login'|'upload'|'accountDeletion')` na rota; limites
+  em `THROTTLE_*_LIMIT` (padrões do contrato; o compose local folga cadastro e upload).
+- **Logs de acesso:** o pino só registra método, caminho sem query e status (a query do download
+  tem a assinatura; os headers têm o nome do arquivo). Nunca logar e-mail, nome ou `originalName`.
 - **Docs no mesmo PR:** mudou comportamento, contrato, env ou comando → atualizar README,
   `contratos.md` e este arquivo no mesmo PR.
 - **Nunca commitar segredos.** Local: `.env` gerado por `scripts/dev-secrets.sh`. Produção:
@@ -85,6 +119,11 @@ make up | down | down-v | logs | ps | smoke | images
   nela sem autorização explícita do Arthur, e nenhum IP, hostname ou nome desses projetos
   entra no repositório (ele é público).
 - `legacy/` é histórico: não refatorar.
+- **`package-lock.json` só com o npm do Node 22 (npm 10)**, o mesmo da imagem e do CI. O npm 11
+  (Node 24/25) reescreve o lock sem as entradas opcionais `@emnapi/*` e o `npm ci` do Node 22
+  passa a falhar (`Missing: @emnapi/core from lock file`). Para mudar dependências com Node 25
+  local: `docker run --rm -v "$PWD:/app" -w /app <imagem node:22 do Dockerfile> npm install
+  --package-lock-only --ignore-scripts`.
 - Imagens (base do Dockerfile e infra do compose) são fixadas por tag + digest; ao atualizar,
   trocar os dois (o Dependabot já faz assim).
 - Actions do CI fixadas pelo SHA do commit, com a versão em comentário.

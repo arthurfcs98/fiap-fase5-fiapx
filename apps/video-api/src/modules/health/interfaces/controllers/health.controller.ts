@@ -2,12 +2,14 @@ import { Controller, Get, Inject } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { HealthCheckResult, HealthIndicatorFunction } from '@nestjs/terminus';
 import { HealthCheck, HealthCheckService } from '@nestjs/terminus';
+import { Public } from '../../../auth/interfaces/decorators/public.decorator';
 import type { ApiConfig } from '../../../../config/api.config';
 import { API_CONFIG, SERVICE_NAME } from '../../../../config/api.config';
 import { READINESS_CHECKS } from '../../health.constants';
 import { LivenessResponseDto } from '../dto/liveness.response.dto';
 
 @ApiTags('health')
+@Public()
 @Controller('health')
 export class HealthController {
   constructor(
@@ -31,7 +33,9 @@ export class HealthController {
   @HealthCheck()
   @ApiOperation({
     summary: 'Readiness: dependências necessárias para atender',
-    description: 'Postgres e storage entram na E3. Responde 503 se alguma checagem falhar.',
+    description:
+      'Postgres (SELECT 1) e storage (os dois buckets). RabbitMQ fica de fora: com o outbox a ' +
+      'API aceita uploads com o broker fora. Responde 503 se alguma checagem falhar.',
   })
   ready(): Promise<HealthCheckResult> {
     return this.health.check(this.readinessChecks);

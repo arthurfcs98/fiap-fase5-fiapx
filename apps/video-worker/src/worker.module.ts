@@ -1,13 +1,22 @@
 import { TypedConfigModule } from '@fiapx/common';
+import { MessagingModule } from '@fiapx/messaging';
 import { createPinoConfig, MetricsServerModule } from '@fiapx/observability';
+import { storageOptionsFromConfig, StorageModule } from '@fiapx/storage';
 import { Module } from '@nestjs/common';
 import { LoggerModule } from 'nestjs-pino';
 import type { WorkerConfig } from './config/worker.config';
-import { WORKER_CONFIG, workerConfigSchema, SERVICE_NAME } from './config/worker.config';
+import {
+  SERVICE_NAME,
+  WORKER_CONFIG,
+  WORKER_SHUTDOWN_TIMEOUT_MS,
+  workerConfigSchema,
+} from './config/worker.config';
+import { ProcessingModule } from './modules/processing/processing.module';
 
 /**
- * video-worker (E0: esqueleto). Sem HTTP público: só o servidor interno de /health e /metrics.
- * A partir da E4 entram o consumidor de `worker.video-uploaded`, ffprobe/ffmpeg e o zip em stream.
+ * video-worker: no public HTTP, only the internal /health and /metrics server. Consumes
+ * `worker.video-uploaded`, extracts frames with ffmpeg and uploads the zip (contratos.md §9).
+ * Messaging and storage are global and do not block the boot while RabbitMQ/Garage are down.
  */
 @Module({
   imports: [
@@ -31,6 +40,19 @@ import { WORKER_CONFIG, workerConfigSchema, SERVICE_NAME } from './config/worker
         token: config.METRICS_TOKEN,
       }),
     }),
+    MessagingModule.forRootAsync({
+      inject: [WORKER_CONFIG],
+      useFactory: (config: WorkerConfig) => ({
+        url: config.RABBITMQ_URL,
+        connectionName: SERVICE_NAME,
+        shutdownTimeoutMs: WORKER_SHUTDOWN_TIMEOUT_MS,
+      }),
+    }),
+    StorageModule.forRootAsync({
+      inject: [WORKER_CONFIG],
+      useFactory: (config: WorkerConfig) => storageOptionsFromConfig(config),
+    }),
+    ProcessingModule,
   ],
 })
 export class WorkerModule {}

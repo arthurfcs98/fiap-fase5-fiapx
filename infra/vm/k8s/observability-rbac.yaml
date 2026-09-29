@@ -1,0 +1,120 @@
+# =============================================================================
+# infra/vm/k8s/observability-rbac.yaml — permissões de LEITURA para a observabilidade do FIAP X.
+#
+# Aplicado SÓ por root (kubeconfig admin do K3s) pelo 40-deployer-access.sh, junto com o
+# namespace-guard.yaml. O CD (deploy.sh) não cria RBAC nenhum: se criasse, quem faz merge na
+# main conseguiria dar a si mesmo qualquer permissão do cluster.
+#
+# Quem usa (os manifestos vêm de infra/k8s/, aplicados pelo deploy.sh no namespace fiapx):
+#   ServiceAccount fiapx/prometheus -> descobre os alvos por anotação (prometheus.io/scrape) e
+#                                      lê o cAdvisor do kubelet (CPU/memória por pod).
+#   ServiceAccount fiapx/alloy      -> Grafana Alloy lê os logs dos pods pela API do Kubernetes
+#                                      (loki.source.kubernetes). NÃO usa hostPath /var/log/pods:
+#                                      o Pod Security "baseline" do namespace proíbe hostPath.
+# Os NOMES das ServiceAccounts são o contrato entre este arquivo e infra/k8s/: mudou lá, muda aqui.
+# Fonte única desse RBAC (docs/observabilidade.md aponta para cá); o 40-deployer-access.sh aplica.
+#
+# O que fica de fora de propósito: secrets (qualquer verbo), nodes/proxy (dá acesso a exec via
+# kubelet), escrita de qualquer tipo e qualquer namespace além do fiapx (os alvos do KEDA e do
+# Traefik são raspados por DNS fixo, sem descoberta).
+# =============================================================================
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fiapx-prometheus
+  namespace: fiapx
+  labels:
+    app.kubernetes.io/part-of: fiapx
+    app.kubernetes.io/name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: [pods, services, endpoints]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fiapx-prometheus
+  namespace: fiapx
+  labels:
+    app.kubernetes.io/part-of: fiapx
+    app.kubernetes.io/name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: fiapx
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: fiapx-prometheus
+---
+# cAdvisor (https://<ip-do-nó>:10250/metrics/cadvisor): o kubelet autoriza por SubjectAccessReview
+# em nodes/metrics. "nodes" (list) serve à descoberta do nó (kubernetes_sd role: node).
+# O UFW já deixa pod -> 10250 entrar pela cni0 (20-firewall.sh).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fiapx-prometheus-kubelet
+  labels:
+    app.kubernetes.io/part-of: fiapx
+    app.kubernetes.io/name: prometheus
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [nodes/metrics]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fiapx-prometheus-kubelet
+  labels:
+    app.kubernetes.io/part-of: fiapx
+    app.kubernetes.io/name: prometheus
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: fiapx
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fiapx-prometheus-kubelet
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fiapx-alloy
+  namespace: fiapx
+  labels:
+    app.kubernetes.io/part-of: fiapx
+    app.kubernetes.io/name: alloy
+rules:
+  # discovery.kubernetes (role: pod) + loki.source.kubernetes (tail pela API: GET com follow).
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [pods/log]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fiapx-alloy
+  namespace: fiapx
+  labels:
+    app.kubernetes.io/part-of: fiapx
+    app.kubernetes.io/name: alloy
+subjects:
+  - kind: ServiceAccount
+    name: alloy
+    namespace: fiapx
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: fiapx-alloy

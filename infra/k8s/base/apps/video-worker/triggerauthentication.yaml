@@ -1,0 +1,16 @@
+# Credencial que o KEDA usa para ler o tamanho da fila na API de management do RabbitMQ.
+# O Secret fiapx-keda-rabbitmq (chave "host" = http://fiapx-keda:<senha>@rabbitmq...:15672/)
+# é criado pelo scripts/bootstrap-secrets.sh; o usuário fiapx-keda (tag "monitoring", sem
+# permissão de ler/escrever mensagens) é criado pelo Job rabbitmq-init (infra/k8s/jobs).
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: video-worker-rabbitmq
+  labels:
+    app.kubernetes.io/name: video-worker
+    app.kubernetes.io/component: worker
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: fiapx-keda-rabbitmq
+      key: host

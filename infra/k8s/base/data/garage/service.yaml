@@ -1,0 +1,20 @@
+# S3_ENDPOINT dos apps: http://garage:3900 (contratos.md, seção 10).
+# 3903 = API admin (só o Job garage-init, com token) e /metrics (Prometheus, com token).
+apiVersion: v1
+kind: Service
+metadata:
+  name: garage
+  labels:
+    app.kubernetes.io/name: garage
+    app.kubernetes.io/component: object-storage
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: garage
+  ports:
+    - name: s3
+      port: 3900
+      targetPort: s3
+    - name: admin
+      port: 3903
+      targetPort: admin

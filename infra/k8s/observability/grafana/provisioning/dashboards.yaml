@@ -1,0 +1,15 @@
+# Carrega os dashboards JSON do ConfigMap grafana-dashboards (pasta "FIAP X").
+# allowUiUpdates: false -> a fonte da verdade é o JSON no git; mudança feita na UI não
+# sobrevive a um reinício (exporte o JSON e faça commit).
+apiVersion: 1
+
+providers:
+  - name: fiapx
+    folder: FIAP X
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    updateIntervalSeconds: 60
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

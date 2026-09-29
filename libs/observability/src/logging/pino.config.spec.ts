@@ -11,6 +11,8 @@ import {
   createPinoConfig,
   createPinoHttpOptions,
   DEFAULT_IGNORED_PATHS,
+  serializeAccessRequest,
+  serializeAccessResponse,
   shouldSkipAccessLog,
 } from './pino.config';
 
@@ -99,7 +101,7 @@ describe('createPinoHttpOptions', () => {
       user: { password: '[REDACTED]', token: '[REDACTED]' },
       req: {
         headers: { authorization: '[REDACTED]' },
-        body: { password: '[REDACTED]', name: 'Ana' },
+        body: { password: '[REDACTED]', name: '[REDACTED]' },
       },
       account: { credentials: { secret: '[REDACTED]', accessToken: '[REDACTED]' } },
       msg: 'login',
@@ -127,6 +129,9 @@ describe('createPinoHttpOptions', () => {
       });
       const withoutHeader = await fetch(`${base}/api/videos`);
       await fetch(`${base}/api/health/live`);
+      await fetch(`${base}/api/downloads/v-1?exp=1&sig=segredo`, {
+        headers: { authorization: 'Bearer abc', 'user-agent': 'ua' },
+      });
       await fetch(`${base}/nada`);
       await fetch(`${base}/boom`);
 
@@ -137,15 +142,47 @@ describe('createPinoHttpOptions', () => {
     }
 
     const access = lines.filter((line) => line['msg'] === 'request completed' || line['err']);
-    expect(access).toHaveLength(4); // health não gera log de acesso
+    expect(access).toHaveLength(5); // health não gera log de acesso
     expect(access[0]).toMatchObject({
       level: 'info',
       correlationId: 'cliente-1',
       service: 'video-api',
     });
-    expect(access[2]).toMatchObject({ level: 'warn' });
-    expect(access[3]).toMatchObject({ level: 'error' });
-    expect(access[3]?.['correlationId']).toEqual(expect.any(String));
+    // Query string (download signature) and headers never reach the access log.
+    expect(access[2]?.['req']).toEqual({
+      id: expect.any(String),
+      method: 'GET',
+      url: '/api/downloads/v-1',
+      remoteAddress: '127.0.0.1',
+    });
+    expect(access[2]?.['res']).toEqual({ statusCode: 200 });
+    expect(JSON.stringify(access[2])).not.toContain('segredo');
+    expect(access[3]).toMatchObject({ level: 'warn' });
+    expect(access[4]).toMatchObject({ level: 'error' });
+    expect(access[4]?.['correlationId']).toEqual(expect.any(String));
+  });
+});
+
+describe('access log serializers', () => {
+  it('keeps only id, method, path and client address of the request', () => {
+    expect(
+      serializeAccessRequest({
+        id: 'c-1',
+        method: 'POST',
+        url: '/api/videos?page=2',
+        remoteAddress: '10.0.0.5',
+      }),
+    ).toEqual({ id: 'c-1', method: 'POST', url: '/api/videos', remoteAddress: '10.0.0.5' });
+    expect(serializeAccessRequest({})).toEqual({
+      id: undefined,
+      method: undefined,
+      url: undefined,
+      remoteAddress: undefined,
+    });
+  });
+
+  it('keeps only the status code of the response', () => {
+    expect(serializeAccessResponse({ statusCode: 410 })).toEqual({ statusCode: 410 });
   });
 });
 

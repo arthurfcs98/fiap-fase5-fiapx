@@ -1,0 +1,157 @@
+# PostgreSQL 16: uma instância, dois bancos isolados (fiapx_video e fiapx_notification), cada
+# um com o próprio usuário (script postgres-init, só na PRIMEIRA inicialização do volume).
+#
+# StatefulSet (e não Deployment): identidade e volume estáveis. O PVC nasce do
+# volumeClaimTemplate e NÃO é apagado quando o StatefulSet é removido (dados sobrevivem).
+# Tamanho: 1Gi (orçamento de disco do infra/vm/README.md, seção 4.4: os PVCs moram num
+# disco em loop de 8 GiB; o local-path não impõe o tamanho, o loop é o teto real).
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+spec:
+  serviceName: postgres
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+    spec:
+      priorityClassName: fiapx-dados       # último a ser despejado
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 60    # checkpoint e shutdown limpo
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70                      # usuário "postgres" da imagem alpine
+        runAsGroup: 70
+        fsGroup: 70
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: postgres:16.15-alpine3.24@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+          imagePullPolicy: IfNotPresent
+          args:
+            # Dimensionado para 320 MiB de limite (infra/vm/README.md, seção 4.3).
+            - -c
+            - shared_buffers=64MB
+            - -c
+            - max_connections=40           # api 2 x 10 + notification 10 + migrações/folga
+            - -c
+            - password_encryption=scram-sha-256
+            - -c
+            - log_min_duration_statement=1000
+            # LGPD (contratos.md, seção 12): sem DETAIL/HINT nos logs (ex.: "Key (email)=(...)
+            # already exists" numa corrida de cadastro) e sem valores de parâmetros nos logs de
+            # comando lento. Os logs vão para o Loki.
+            - -c
+            - log_error_verbosity=terse
+            - -c
+            - log_parameter_max_length=0
+          env:
+            - name: POSTGRES_USER
+              value: fiapx
+            - name: POSTGRES_DB
+              value: fiapx
+            - name: POSTGRES_PASSWORD_FILE
+              value: /run/secrets/postgres/POSTGRES_PASSWORD
+            # Lidas pelo 00-create-databases.sh (mesmo script do compose).
+            - name: VIDEO_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fiapx-postgres
+                  key: VIDEO_DB_PASSWORD
+            - name: NOTIF_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fiapx-postgres
+                  key: NOTIF_DB_PASSWORD
+            # Subpasta: o initdb exige diretório vazio e sem outros donos.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            - name: secrets
+              mountPath: /run/secrets/postgres
+              readOnly: true
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              cpu: 500m
+              memory: 320Mi
+          startupProbe:
+            # -h 127.0.0.1 (TCP): o servidor temporário do initdb só escuta no socket unix,
+            # então a probe não fica verde antes do fim dos scripts de init.
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "fiapx", "-d", "fiapx"]
+            periodSeconds: 5
+            failureThreshold: 60
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "fiapx", "-d", "fiapx"]
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "fiapx", "-d", "fiapx"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true   # graváveis: volume de dados, socket e /tmp
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+            defaultMode: 0555
+        - name: secrets
+          secret:
+            secretName: fiapx-postgres
+            defaultMode: 0440
+            items:
+              - key: POSTGRES_PASSWORD
+                path: POSTGRES_PASSWORD
+        - name: run
+          emptyDir:
+            sizeLimit: 16Mi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: postgres
+          app.kubernetes.io/part-of: fiapx
+          fiapx.io/tier: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

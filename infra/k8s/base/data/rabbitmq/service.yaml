@@ -1,0 +1,23 @@
+# RABBITMQ_URL dos apps: amqp://fiapx:***@rabbitmq:5672 (contratos.md, seção 10).
+# 15672 = API de management (KEDA e o Job rabbitmq-init); 15692 = métricas Prometheus.
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/component: broker
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: amqp
+    - name: management
+      port: 15672
+      targetPort: management
+    - name: prometheus
+      port: 15692
+      targetPort: prometheus

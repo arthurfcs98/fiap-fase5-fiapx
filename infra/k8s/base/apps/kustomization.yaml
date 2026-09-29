@@ -1,0 +1,24 @@
+# Os 3 microsserviços. Cada um tem um ConfigMap gerado a partir de um arquivo .env SEM
+# segredos: mudar um valor muda o hash do nome, o que dispara rollout (e o rollback do
+# deploy.sh volta o ConfigMap antigo junto). Segredos: só pelos Secrets criados pelo
+# scripts/bootstrap-secrets.sh, montados como arquivo (<VAR>_FILE, contratos.md seção 10).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - video-api/deployment.yaml
+  - video-api/service.yaml
+  - video-api/hpa.yaml
+  - video-api/ingress.yaml
+  - video-worker/deployment.yaml
+  - video-worker/triggerauthentication.yaml
+  - video-worker/scaledobject.yaml
+  - notification-service/deployment.yaml
+
+configMapGenerator:
+  - name: video-api-config
+    envs: [video-api/config.env]
+  - name: video-worker-config
+    envs: [video-worker/config.env]
+  - name: notification-service-config
+    envs: [notification-service/config.env]

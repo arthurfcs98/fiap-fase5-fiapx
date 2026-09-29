@@ -1,12 +1,16 @@
-# CI do monorepo FIAP X.
+# CI/CD do monorepo FIAP X.
 # PR e push na main: qualidade (lint, typecheck, build, actionlint, hadolint, shellcheck),
-# testes (cobertura >= 80% por project), E2E, build das 3 imagens (UMA vez, com cache) e smoke
-# do compose com ESSAS imagens. Só no push na main, e só se tudo passou, as mesmas imagens
-# testadas no smoke vão para o GHCR (sha-<7> e main).
+# testes (cobertura >= 80% por project), integração (Testcontainers + ffmpeg), E2E do video-api,
+# segurança (gitleaks no histórico inteiro + npm audit), validação dos manifestos K8s, build das 3
+# imagens (UMA vez, com cache) e o E2E BDD no stack do compose com ESSAS imagens.
+# Só no push na main, e só se tudo passou: as mesmas imagens testadas vão para o GHCR (sha-<7> e
+# main) e o job `deploy` aplica o commit no K3s da VM (forced command SSH) com smoke público e
+# rollback automático.
 # O único check exigido na branch protection é o `ci-ok`.
 #
 # Actions de terceiros fixadas pelo SHA do commit (versão no comentário); o Dependabot
-# (.github/dependabot.yml) abre PR quando sai versão nova.
+# (.github/dependabot.yml) abre PR quando sai versão nova. Imagens de ferramentas fixadas por
+# tag + digest.
 name: CI
 
 on:
@@ -27,6 +31,7 @@ permissions: {}
 env:
   IMAGE_PREFIX: ghcr.io/arthurfcs98/fiapx
   APPS: video-api video-worker notification-service
+  GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
 
 jobs:
   quality:
@@ -64,7 +69,9 @@ jobs:
           hadolint/hadolint:v2.15.1@sha256:32dac94127fd60b7b7e3fbfc65e1383b9b5e25c9bfd7b8536de7a539fe68a12d
           hadolint docker/node-service.Dockerfile
       - name: shellcheck (scripts)
-        run: shellcheck scripts/*.sh docker/healthcheck.sh infra/postgres/init/*.sh
+        run: >-
+          shellcheck -x scripts/*.sh scripts/demo/*.sh scripts/git-hooks/*.sh
+          tests/fixtures/generate.sh docker/healthcheck.sh infra/postgres/init/*.sh
 
   test:
     name: test (${{ matrix.name }})
@@ -105,7 +112,9 @@ jobs:
           if-no-files-found: ignore
 
   e2e:
-    name: e2e (video-api)
+    name: e2e (video-api, containers reais)
+    # Testcontainers (Postgres, Redis, RabbitMQ, Garage com as imagens do compose.yaml): o
+    # video-api inteiro (NestFactory, como o main.ts) com o worker simulado pelos eventos.
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -118,12 +127,107 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      - name: Login no Docker Hub (opcional, evita rate limit de pull anônimo)
+        if: vars.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - run: npm ci
       - run: npm run test:e2e
 
+  integration:
+    name: integration (RabbitMQ, Postgres, Garage e ffmpeg reais)
+    # Testcontainers: cada arquivo `*.int-spec.ts` sobe os próprios containers (imagens e
+    # digests lidos do compose.yaml). Inclui a regressão do requeue infinito da Fase 4, o worker
+    # com ffmpeg real e o notification-service com Mailpit. Com CI=true, os testes do worker
+    # FALHAM (em vez de pular) se o ffmpeg não estiver no PATH.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: ffmpeg/ffprobe (worker e tests/fixtures/generate.sh)
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ffmpeg
+          ffmpeg -version | head -n1
+      - name: Login no Docker Hub (opcional, evita rate limit de pull anônimo)
+        if: vars.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - run: npm ci
+      - run: npm run test:int
+
+  security:
+    name: security (gitleaks no histórico, npm audit)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0 # histórico inteiro: um segredo apagado depois continua no git
+      - name: gitleaks (todos os commits, regras em .gitleaks.toml)
+        run: >-
+          docker run --rm -v "$PWD:/repo:ro" -w /repo
+          -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*'
+          "$GITLEAKS_IMAGE" git --redact --verbose --no-banner --config .gitleaks.toml /repo
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      # Não bloqueia: um aviso novo no registro do npm não pode travar a main sem mudança de
+      # código. Aparece como passo com erro (amarelo) e no resumo; o Dependabot abre a correção.
+      - name: npm audit (dependências de produção, severidade >= high; não bloqueia)
+        continue-on-error: true
+        run: |
+          if ! npm audit --omit=dev --audit-level=high; then
+            echo "::warning::npm audit encontrou vulnerabilidade high/critical em dependência de produção"
+            exit 1
+          fi
+
+  k8s-validate:
+    name: k8s-validate (kustomize, kubeconform, promtool, loki, alloy)
+    # Valida os manifestos SEM cluster: kustomize dos overlays, regras do deploy.sh e orçamento
+    # da quota, kubeconform estrito, promtool (config, regras e testes dos alertas), Loki, Alloy,
+    # dashboards e shellcheck (infra/k8s/scripts/validate.sh).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Login no Docker Hub (opcional, evita rate limit de pull anônimo)
+        if: vars.DOCKERHUB_USERNAME != ''
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # js-yaml (usado pelo check-manifests.mjs) vem das dependências do monorepo.
+      - run: npm ci --no-audit --no-fund
+      # kubectl (kustomize embutido), jq e shellcheck já vêm na imagem ubuntu-24.04 do GitHub.
+      - run: infra/k8s/scripts/validate.sh
+
   build-images:
     name: build image (${{ matrix.app }})
-    # PR e main. Constrói UMA vez (cache do Actions) e exporta a imagem como artefato: o smoke
+    # PR e main. Constrói UMA vez (cache do Actions) e exporta a imagem como artefato: o E2E BDD
     # sobe exatamente estas imagens e o job `images` publica exatamente estas imagens.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -183,17 +287,30 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  compose-smoke:
-    name: compose smoke (stack completo, imagens do build)
+  e2e-bdd:
+    name: e2e-bdd (compose com as imagens do build, 3 workers, smoke + BDD)
+    # Sobe o stack COMPLETO (infra, migrações e os 3 apps com as imagens deste commit), roda o
+    # smoke e depois os cenários BDD em pt-BR (tests/bdd/features) com jest-cucumber: vídeo
+    # processado e zip baixado, vídeo corrompido -> FAILED + e-mail no Mailpit, isolamento e 401,
+    # pico de 15 uploads com 3 workers sem perda, LGPD (aceite, exportação, eliminação,
+    # retenção do zip) e logs sem dados pessoais.
     needs: [build-images]
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      # Retenção do zip curta (~43 s) para o cenário de retenção (igual ao `make bdd-up`).
+      ZIP_RETENTION_DAYS: "0.0005"
+      DATA_RETENTION_INTERVAL_S: "10"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
       - name: Login no Docker Hub (opcional, evita rate limit de pull anônimo)
         if: vars.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
@@ -211,6 +328,7 @@ jobs:
           # O shell ganha do .env no compose e no smoke: sobe e confere a tag deste commit.
           echo "FIAPX_IMAGE_TAG=sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
           echo "APP_VERSION=sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+      - run: npm ci
       - name: Segredos locais efêmeros (.env)
         run: ./scripts/dev-secrets.sh
       - name: Valida o compose
@@ -218,10 +336,12 @@ jobs:
           docker version --format 'Docker {{.Server.Version}}'
           docker compose version
           docker compose config --quiet
-      - name: Sobe o stack e espera healthy
-        run: docker compose up -d --no-build --wait --wait-timeout 300
+      - name: Sobe o stack (3 workers) e espera healthy
+        run: docker compose up -d --no-build --wait --wait-timeout 300 --scale video-worker=3
       - name: Smoke
         run: ./scripts/compose-smoke.sh
+      - name: BDD (jest-cucumber)
+        run: npm run test:bdd
       - name: Logs do compose (em caso de falha)
         if: failure()
         run: docker compose logs --no-color --timestamps > compose-logs.txt
@@ -237,9 +357,9 @@ jobs:
 
   images:
     name: publish images (GHCR)
-    # Só no push na main e só com qualidade, testes, E2E e smoke verdes. Publica as MESMAS
-    # imagens que passaram no smoke (artefatos do build-images), sem rebuild.
-    needs: [quality, test, e2e, compose-smoke]
+    # Só no push na main e só com todos os jobs de verificação verdes. Publica as MESMAS
+    # imagens que passaram no E2E (artefatos do build-images), sem rebuild.
+    needs: [quality, test, e2e, integration, security, k8s-validate, e2e-bdd]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -286,7 +406,7 @@ jobs:
     # Agregador: único check exigido na branch protection. Falha se qualquer job falhou ou
     # foi cancelado; `skipped` é aceito (o `images` só roda no push na main).
     if: always()
-    needs: [quality, test, e2e, build-images, compose-smoke, images]
+    needs: [quality, test, e2e, integration, security, k8s-validate, build-images, e2e-bdd, images]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}
@@ -297,3 +417,127 @@ jobs:
         run: |
           echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
           echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' > /dev/null
+
+  # ---------------------------------------------------------------------------------- CD --
+  # Depois que o `ci-ok` passou na main (qualidade + testes + E2E + imagens sha-<7> no GHCR):
+  #   1. configura o SSH com a chave RESTRITA e o host key FIXADO (sem TOFU);
+  #   2. `ssh fiapx-vm "deploy <sha40>"`: a chave só consegue rodar /opt/fiapx/bin/deploy.sh
+  #      (forced command, fonte em infra/vm/deploy.sh), que renderiza infra/k8s/overlays/prod com
+  #      as imagens ghcr.io/arthurfcs98/fiapx-<app>:sha-<7> fixadas por digest, roda os Jobs de
+  #      setup/migração e espera o rollout. O log do deploy aparece aqui, ao vivo;
+  #   3. smoke público: https://fiapx.asdevit.com/api/health/live (host técnico, o que o Ingress
+  #      atende) precisa responder version == sha-<7> deste commit; o endereço oficial
+  #      https://frames.asdevit.com é conferido só como aviso;
+  #   4. se o smoke falhar: `ssh fiapx-vm rollback` e o job fica vermelho.
+  # Pré-requisitos (infra/vm/README.md, "Primeiro deploy"): environment `production` com
+  # "Deployment branches: main" e os secrets DE ENVIRONMENT VM_HOST, VM_SSH_KEY e
+  # VM_KNOWN_HOSTS; os 3 pacotes GHCR fiapx-* públicos; na VM, a instalação da README (seção 5)
+  # e as correções pós-instalação (seção 0.2).
+  # Códigos do deploy.sh: 0 ok | 1 falhou e revertido | 2 pedido inválido | 3 rollback falhou
+  #   | 4 downgrade recusado | 5 commit já marcado como ruim | 75 lock ocupado | 255 = erro do ssh.
+  # Nenhuma action de terceiros neste job: só o `ssh` e o `curl` do runner.
+  deploy:
+    name: deploy (K3s na VM)
+    needs: [ci-ok, images]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    # Worker em Recreate espera até 330 s o vídeo em curso; migração, rollout e smoke cabem aqui.
+    timeout-minutes: 30
+    permissions: {} # não faz checkout nem usa o GITHUB_TOKEN
+    environment: # secrets de environment: só jobs da main (regra do environment) os leem
+      name: production
+      url: https://frames.asdevit.com # endereço público oficial (contratos.md, seção 14)
+    concurrency: # um deploy por vez; um pendente mais novo substitui o pendente antigo
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      RELEASE_SHA: ${{ github.sha }}
+      PUBLIC_URL: https://fiapx.asdevit.com # host técnico (Ingress); decide o rollback
+      BRAND_URL: https://frames.asdevit.com # endereço oficial; só aviso
+    steps:
+      - name: SSH (chave restrita + host key fixado)
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          VM_KNOWN_HOSTS: ${{ secrets.VM_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          for name in VM_HOST VM_SSH_KEY VM_KNOWN_HOSTS; do
+            [[ -n ${!name} ]] || { echo "::error::secret $name ausente no environment production"; exit 1; }
+          done
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$VM_SSH_KEY" > ~/.ssh/fiapx_deploy
+          chmod 600 ~/.ssh/fiapx_deploy
+          printf '%s\n' "$VM_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CFG
+          Host fiapx-vm
+            HostName ${VM_HOST}
+            User fiapx-deploy
+            IdentityFile ~/.ssh/fiapx_deploy
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+            UserKnownHostsFile ~/.ssh/known_hosts
+            BatchMode yes
+            ConnectTimeout 15
+            ServerAliveInterval 15
+            ServerAliveCountMax 8
+            LogLevel ERROR
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Deploy no K3s (forced command na VM)
+        run: |
+          rc=0
+          for attempt in 1 2; do
+            rc=0
+            # shellcheck disable=SC2029  # expandir no runner é o desejado: a VM recebe "deploy <sha40>"
+            ssh fiapx-vm "deploy ${RELEASE_SHA}" || rc=$?
+            # 255 = falha do próprio ssh. Repetir é seguro: o worker da VM é destacado e usa lock;
+            # se a 1ª tentativa já tinha falhado e revertido, a VM recusa o mesmo SHA (código 5)
+            # em vez de refazer o deploy ruim (e o downtime) uma segunda vez.
+            [[ $rc -ne 255 ]] && break
+            echo "::warning::ssh falhou (tentativa ${attempt}); repetindo em 20 s"; sleep 20
+          done
+          case $rc in
+            0) ;;
+            1) echo "::error::deploy falhou; a VM voltou para a release anterior (ou nada foi aplicado)"; exit 1 ;;
+            2) echo "::error::pedido recusado pelo forced command"; exit 1 ;;
+            3) echo "::error::deploy falhou E o rollback falhou: intervenção manual na VM"; exit 1 ;;
+            4) echo "::error::downgrade recusado: este commit é mais antigo que a release atual (use o rollback)"; exit 1 ;;
+            5) echo "::error::este commit já falhou e foi revertido na VM (lista 'bad'); nada foi aplicado. Corrija com um commit novo (liberar o mesmo SHA: README da infra/vm, seção 9)"; exit 1 ;;
+            75) echo "::error::outro deploy segurou o lock da VM por 15 min"; exit 1 ;;
+            *) echo "::error::deploy terminou com código ${rc}"; exit 1 ;;
+          esac
+
+      - name: Smoke público (Cloudflare -> Caddy -> Traefik -> video-api)
+        id: smoke
+        run: |
+          set -uo pipefail
+          expected="sha-${RELEASE_SHA::7}"      # APP_VERSION que o job de imagens grava em cada imagem
+          ua="fiapx-smoke/1.0 (+github-actions)"
+          ver=""
+          for i in $(seq 1 24); do              # até 2 min
+            hdr=$(mktemp)
+            body=$(curl -sS --max-time 8 -A "$ua" -H 'Cache-Control: no-cache' -D "$hdr" "$PUBLIC_URL/api/health/live" || true)
+            if grep -qi '^cf-mitigated:' "$hdr"; then
+              echo "::error::a Cloudflare desafiou o runner (cf-mitigated). Crie uma regra WAF de skip para /api/health/*"; exit 1
+            fi
+            ver=$(jq -r '.version // empty' <<<"$body" 2>/dev/null || true)
+            [[ $ver == "$expected" ]] && break
+            echo "tentativa $i: version='${ver:-?}' esperada=${expected}"; sleep 5
+          done
+          [[ $ver == "$expected" ]] || { echo "::error::$PUBLIC_URL/api/health/live não mostra ${expected}"; exit 1; }
+          echo "publicado: ${ver}"
+          ready=$(curl -sS --max-time 8 -A "$ua" -o /dev/null -w '%{http_code}' "$PUBLIC_URL/api/health/ready" || true)
+          [[ $ready == 200 ]] || { echo "::error::$PUBLIC_URL/api/health/ready respondeu ${ready:-?}"; exit 1; }
+          brand=$(curl -sS --max-time 8 -A "$ua" -H 'Cache-Control: no-cache' "$BRAND_URL/api/health/live" 2>/dev/null | jq -r '.version // empty' 2>/dev/null || true)
+          [[ $brand == "$expected" ]] || echo "::warning::$BRAND_URL/api/health/live mostra '${brand:-?}' (esperado ${expected}): confira o frames.caddy na borda"
+          echo "### Deploy ${expected}: $PUBLIC_URL e $BRAND_URL" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Rollback (smoke público falhou)
+        if: failure() && steps.smoke.outcome == 'failure'
+        run: ssh fiapx-vm rollback
+
+      - name: Apagar a chave do runner
+        if: always()
+        run: rm -f ~/.ssh/fiapx_deploy

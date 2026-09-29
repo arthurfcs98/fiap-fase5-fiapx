@@ -1,0 +1,205 @@
+# =============================================================================
+# infra/vm/k8s/namespace-guard.yaml — as "grades" do namespace fiapx na VM compartilhada.
+#
+# Aplicado SÓ por root (kubeconfig admin do K3s) pelo 40-deployer-access.sh. O deploy.sh
+# do CD não tem permissão para mexer em nada deste arquivo.
+#
+# O que cada objeto protege (detalhes e contas na infra/vm/README.md, seção "Orçamento"):
+#   Namespace + Pod Security "baseline"  -> nenhum pod do fiapx vira root no nó (sem
+#                                           privileged, hostPath, hostNetwork, hostPort).
+#   ResourceQuota fiapx-teto             -> teto de soma de recursos do namespace e
+#                                           proibição de NodePort/LoadBalancer.
+#   ResourceQuota fiapx-sem-prioridade-  -> 0 pods com as PriorityClasses do sistema
+#     de-sistema                            (system-node-critical/system-cluster-critical).
+#   LimitRange                           -> todo container ganha request/limit padrão e
+#                                           nenhum passa de 1 vCPU / 768 MiB.
+#   PriorityClass (3)                    -> ordem de despejo sob pressão: worker primeiro,
+#                                           dados por último. Nunca preemptam ninguém.
+#   ValidatingAdmissionPolicy            -> proíbe pod "Guaranteed" (request == limit de
+#                                           memória), que teria oom_score_adj -997 e
+#                                           morreria DEPOIS dos vizinhos num OOM global; e só
+#                                           aceita as 3 PriorityClasses fiapx-* (ou nenhuma).
+#
+# A proteção dura dos vizinhos NÃO é esta quota: é o memory.max do kubepods.slice (kubelet com
+# systemReserved/kubeReserved), ver 10-install-k3s.sh. A quota é a segunda camada.
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: fiapx
+  labels:
+    app.kubernetes.io/part-of: fiapx
+    # baseline: bloqueia privileged, hostPath, hostNetwork/PID/IPC, hostPort e capabilities
+    # extras. Um manifesto ruim no repo não consegue escapar para o nó onde rodam os vizinhos.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    # restricted só avisa (warn) e registra (audit): é a meta para os manifestos da E6.
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: fiapx-teto
+  namespace: fiapx
+  labels:
+    app.kubernetes.io/part-of: fiapx
+spec:
+  hard:
+    # Contas (README, seção 4.3), já com a observabilidade (Prometheus, Grafana, Loki, Alloy)
+    # DENTRO deste namespace:
+    #   regime (réplicas mínimas)            = 925m / 1568Mi pedidos; 4250m / 3264Mi de teto
+    #   escala máxima (api 2, worker 2)      = 1325m / 1984Mi;        5750m / 4096Mi
+    #   escala máxima + surge do api no deploy = 1475m / 2144Mi;      6250m / 4416Mi
+    requests.cpu: "1600m"
+    limits.cpu: "7"                 # soma de TETOS (overcommit); o teto real da CPU é o cpu.max de cada worker
+    requests.memory: "2304Mi"
+    # Abaixo da parede do kubepods.slice (4679 MiB). A soma dos tetos do nó inteiro (este + Traefik,
+    # KEDA, CoreDNS) passa da parede: tudo bem, a parede é quem segura. Se todos encostarem no teto
+    # ao mesmo tempo, o OOM acontece DENTRO do kubepods.slice, longe dos vizinhos.
+    limits.memory: "4608Mi"
+    requests.ephemeral-storage: "3Gi"
+    limits.ephemeral-storage: "10Gi"
+    pods: "20"                      # 14 na escala máxima + surge, + 1 Job, + folga
+    persistentvolumeclaims: "7"     # postgres, rabbitmq, garage, prometheus, loki + 2 de folga
+    # Os PVs moram em /var/lib/fiapx-pv, um disco em loop de 8 GiB SÓ para eles (10-install-k3s.sh).
+    # O local-path não aplica tamanho de PVC: quem limita de verdade é esse disco; a quota só
+    # impede declarar mais do que ele comporta. Contas: postgres 1Gi, rabbitmq 1Gi, garage 4Gi
+    # (quotas de bucket 1 GiB raw + 2,5 GiB zips), prometheus 512Mi (3 dias, retention.size 400MB),
+    # loki 1Gi (72 h) = 7,5Gi. O Grafana não tem PVC (dashboards provisionados).
+    requests.storage: "8Gi"
+    # Segurança: o único NodePort do cluster é o do Traefik (namespace traefik).
+    services.nodeports: "0"
+    services.loadbalancers: "0"
+---
+# Segunda trava (independe da ValidatingAdmissionPolicy abaixo): o Kubernetes deixa QUALQUER
+# namespace usar system-node-critical/system-cluster-critical. Um pod do fiapx com uma delas
+# ganharia oom_score_adj -997 (sobreviveria aos vizinhos num OOM global), seria o último a ser
+# despejado e poderia PREEMPTAR Traefik, KEDA e CoreDNS. Quota de 0 pods nesse escopo = proibido.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: fiapx-sem-prioridade-de-sistema
+  namespace: fiapx
+  labels:
+    app.kubernetes.io/part-of: fiapx
+spec:
+  hard:
+    pods: "0"
+  scopeSelector:
+    matchExpressions:
+      - scopeName: PriorityClass
+        operator: In
+        values: ["system-node-critical", "system-cluster-critical"]
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: fiapx-padroes
+  namespace: fiapx
+  labels:
+    app.kubernetes.io/part-of: fiapx
+spec:
+  limits:
+    - type: Container
+      # Aplicado a quem não declarar resources (ex.: um Job esquecido).
+      default:        { cpu: "250m", memory: "256Mi", ephemeral-storage: "256Mi" }
+      defaultRequest: { cpu: "25m",  memory: "64Mi",  ephemeral-storage: "32Mi" }
+      # Nenhum container passa disto. O worker (1 vCPU / 512 MiB) é o maior.
+      max:            { cpu: "1",    memory: "768Mi", ephemeral-storage: "3Gi" }
+      min:            { memory: "16Mi" }
+      # limit/request <= 4 (memória) e <= 10 (CPU): impede request simbólico com limit enorme.
+      maxLimitRequestRatio: { memory: "4", cpu: "10" }
+    - type: PersistentVolumeClaim
+      max: { storage: "5Gi" }
+---
+# Prioridades: o kubelet despeja primeiro quem passou do request, depois a menor prioridade.
+# preemptionPolicy: Never em todas: a prioridade só ordena despejo e fila do scheduler; um pod
+# do fiapx nunca derruba outro pod (nem os do KEDA/kube-system) para caber.
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: fiapx-dados
+  labels:
+    app.kubernetes.io/part-of: fiapx
+value: 1000
+preemptionPolicy: Never
+globalDefault: false
+description: "fiapx: postgres, rabbitmq, garage (último a ser despejado)"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: fiapx-app
+  labels:
+    app.kubernetes.io/part-of: fiapx
+value: 500
+preemptionPolicy: Never
+globalDefault: false
+description: "fiapx: video-api, notification-service, prometheus, grafana, loki, alloy"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: fiapx-lote
+  labels:
+    app.kubernetes.io/part-of: fiapx
+value: 100
+preemptionPolicy: Never
+globalDefault: false
+description: "fiapx: video-worker (primeiro a sair; a mensagem volta para a fila)"
+---
+# Pod QoS "Guaranteed" (request == limit) recebe oom_score_adj=-997: num OOM global o kernel
+# mataria os vizinhos (adj 0) antes dele. Esta política (roda dentro do apiserver, custo zero) exige
+# request < limit de memória em todo container do fiapx (QoS Burstable, adj ~967-996).
+# O LimitRanger (mutante) roda antes: container sem resources recebe 64Mi/256Mi e passa.
+# A segunda regra fecha o mesmo buraco pelo outro lado: priorityClassName só pode ser uma das
+# 3 classes fiapx-* (ou nenhuma). system-node-critical daria oom_score_adj -997 a qualquer QoS.
+# Vale para pods (onde a regra é aplicada de fato): um Deployment com classe proibida é aceito,
+# mas o ReplicaSet não consegue criar pods e o rollout falha (o deploy.sh reverte).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: fiapx-sem-guaranteed
+  labels:
+    app.kubernetes.io/part-of: fiapx
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+  validations:
+    - expression: >-
+        object.spec.containers.all(c,
+          has(c.resources) && has(c.resources.requests) && has(c.resources.limits) &&
+          'memory' in c.resources.requests && 'memory' in c.resources.limits &&
+          quantity(c.resources.requests.memory).isLessThan(quantity(c.resources.limits.memory)))
+      message: >-
+        fiapx: todo container precisa de request de memória MENOR que o limit (QoS Burstable).
+        Pod Guaranteed teria oom_score_adj -997 e sobreviveria aos vizinhos num OOM global.
+    - expression: >-
+        !has(object.spec.priorityClassName) ||
+        object.spec.priorityClassName in ['fiapx-dados', 'fiapx-app', 'fiapx-lote']
+      message: >-
+        fiapx: priorityClassName só pode ser fiapx-dados, fiapx-app ou fiapx-lote (ou nenhuma).
+        system-node-critical/system-cluster-critical dariam oom_score_adj -997 e preempção de
+        Traefik, KEDA e CoreDNS.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: fiapx-sem-guaranteed
+  labels:
+    app.kubernetes.io/part-of: fiapx
+spec:
+  policyName: fiapx-sem-guaranteed
+  validationActions: [Deny]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: fiapx

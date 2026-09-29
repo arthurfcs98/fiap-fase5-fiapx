@@ -1,0 +1,120 @@
+# =============================================================================
+# Regras de gravação (recording rules) dos SLOs do FIAP X (contratos.md, seção 13).
+#
+# Convenção de nome: nível:métrica:operação (padrão do Prometheus). Tudo que termina em
+# "_7d" é a janela do SLO (7 dias) e é calculado a cada 5 min (consulta mais pesada); as
+# janelas curtas alimentam os alertas de taxa de queima e o dashboard.
+#
+# Objetivos (janela de 7 dias):
+#   disponibilidade  >= 99,5% das requisições sem 5xx     orçamento de erro 0,5%
+#   aceite do upload  p95 de POST /api/videos < 5 s        = >= 95% abaixo de 5 s (orçamento 5%)
+#   processamento     p95 < 120 s                           = >= 95% abaixo de 120 s (orçamento 5%)
+#   pipeline          >= 99% dos vídeos válidos COMPLETED   orçamento 1% (P0098/P0099 = erro do
+#                     sistema; P0001-P0005 são erro de entrada e ficam fora)
+#
+# "le" do bucket: o Prometheus 3 normaliza para ponto flutuante (le="5" vira le="5.0"), por
+# isso a regex 5(\.0)?. Os buckets têm limite exato em 5 s (HTTP) e 120 s (processamento).
+# Numerador com "or vector(0)": sem nenhum 5xx a série não existe, e a razão tem que dar 0.
+# =============================================================================
+groups:
+  - name: fiapx-slo-janelas-curtas
+    interval: 30s
+    rules:
+      # ---------------------------------------------------------- disponibilidade da API
+      - record: fiapx:http_requests:rate5m
+        expr: sum(rate(fiapx_http_request_duration_seconds_count[5m]))
+
+      - record: fiapx:slo_availability:error_ratio_rate5m
+        expr: |
+          (sum(rate(fiapx_http_request_duration_seconds_count{status=~"5.."}[5m])) or vector(0))
+          /
+          sum(rate(fiapx_http_request_duration_seconds_count[5m]))
+
+      - record: fiapx:slo_availability:error_ratio_rate30m
+        expr: |
+          (sum(rate(fiapx_http_request_duration_seconds_count{status=~"5.."}[30m])) or vector(0))
+          /
+          sum(rate(fiapx_http_request_duration_seconds_count[30m]))
+
+      - record: fiapx:slo_availability:error_ratio_rate1h
+        expr: |
+          (sum(rate(fiapx_http_request_duration_seconds_count{status=~"5.."}[1h])) or vector(0))
+          /
+          sum(rate(fiapx_http_request_duration_seconds_count[1h]))
+
+      - record: fiapx:slo_availability:error_ratio_rate6h
+        expr: |
+          (sum(rate(fiapx_http_request_duration_seconds_count{status=~"5.."}[6h])) or vector(0))
+          /
+          sum(rate(fiapx_http_request_duration_seconds_count[6h]))
+
+      # ---------------------------------------------------------- aceite do upload
+      - record: fiapx:slo_upload_latency:p95_rate10m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(fiapx_http_request_duration_seconds_bucket{method="POST", route="/api/videos"}[10m])))
+
+      # ---------------------------------------------------------- tempo de processamento
+      - record: fiapx:slo_processing:p95_rate30m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(fiapx_video_processing_duration_seconds_bucket{result="completed"}[30m])))
+
+      - record: fiapx:slo_processing:p50_rate30m
+        expr: |
+          histogram_quantile(0.50,
+            sum by (le) (rate(fiapx_video_processing_duration_seconds_bucket{result="completed"}[30m])))
+
+  - name: fiapx-slo-7d
+    interval: 5m
+    rules:
+      # ---------------------------------------------------------- disponibilidade da API
+      - record: fiapx:slo_availability:error_ratio_7d
+        expr: |
+          (sum(increase(fiapx_http_request_duration_seconds_count{status=~"5.."}[7d])) or vector(0))
+          /
+          sum(increase(fiapx_http_request_duration_seconds_count[7d]))
+
+      - record: fiapx:slo_availability:sli_7d
+        expr: 1 - fiapx:slo_availability:error_ratio_7d
+
+      # 1 = orçamento inteiro; 0 = acabou; negativo = SLO violado na janela.
+      - record: fiapx:slo_availability:error_budget_remaining_7d
+        expr: 1 - (fiapx:slo_availability:error_ratio_7d / 0.005)
+
+      # ---------------------------------------------------------- aceite do upload
+      - record: fiapx:slo_upload_latency:sli_7d
+        expr: |
+          sum(increase(fiapx_http_request_duration_seconds_bucket{method="POST", route="/api/videos", le=~"5(\\.0)?"}[7d]))
+          /
+          sum(increase(fiapx_http_request_duration_seconds_count{method="POST", route="/api/videos"}[7d]))
+
+      - record: fiapx:slo_upload_latency:error_budget_remaining_7d
+        expr: 1 - ((1 - fiapx:slo_upload_latency:sli_7d) / 0.05)
+
+      # ---------------------------------------------------------- tempo de processamento
+      - record: fiapx:slo_processing:sli_7d
+        expr: |
+          sum(increase(fiapx_video_processing_duration_seconds_bucket{result="completed", le=~"120(\\.0)?"}[7d]))
+          /
+          sum(increase(fiapx_video_processing_duration_seconds_count{result="completed"}[7d]))
+
+      - record: fiapx:slo_processing:error_budget_remaining_7d
+        expr: 1 - ((1 - fiapx:slo_processing:sli_7d) / 0.05)
+
+      # ---------------------------------------------------------- sucesso do pipeline
+      - record: fiapx:slo_pipeline:error_ratio_7d
+        expr: |
+          (sum(increase(fiapx_videos_failed_total{error_code=~"P0098|P0099"}[7d])) or vector(0))
+          /
+          (
+            (sum(increase(fiapx_videos_completed_total[7d])) or vector(0))
+            +
+            (sum(increase(fiapx_videos_failed_total{error_code=~"P0098|P0099"}[7d])) or vector(0))
+          )
+
+      - record: fiapx:slo_pipeline:sli_7d
+        expr: 1 - fiapx:slo_pipeline:error_ratio_7d
+
+      - record: fiapx:slo_pipeline:error_budget_remaining_7d
+        expr: 1 - (fiapx:slo_pipeline:error_ratio_7d / 0.01)

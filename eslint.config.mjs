@@ -47,7 +47,7 @@ export default defineConfig(
   },
   {
     // Testes: asserções sobre `any` do supertest/jest e mocks de métodos são legítimos.
-    files: ['**/*.spec.ts', '**/*.e2e-spec.ts'],
+    files: ['**/*.spec.ts', '**/*.e2e-spec.ts', 'tests/**/*.ts'],
     languageOptions: { globals: { ...globals.jest } },
     rules: {
       '@typescript-eslint/no-unsafe-assignment': 'off',
@@ -63,6 +63,14 @@ export default defineConfig(
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
       'no-console': 'off',
+    },
+  },
+  {
+    // k6 scripts: ES modules run by k6 (not Node), with k6 globals.
+    files: ['tests/load/**/*.js'],
+    languageOptions: {
+      sourceType: 'module',
+      globals: { __ENV: 'readonly', __VU: 'readonly', __ITER: 'readonly', open: 'readonly' },
     },
   },
   prettier,

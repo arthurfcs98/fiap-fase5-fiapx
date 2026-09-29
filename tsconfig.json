@@ -32,9 +32,10 @@
       "@fiapx/contracts": ["libs/contracts/src"],
       "@fiapx/contracts/*": ["libs/contracts/src/*"],
       "@fiapx/storage": ["libs/storage/src"],
-      "@fiapx/storage/*": ["libs/storage/src/*"]
+      "@fiapx/storage/*": ["libs/storage/src/*"],
+      "@fiapx/testing": ["test/support"]
     }
   },
-  "include": ["apps/**/*.ts", "libs/**/*.ts"],
+  "include": ["apps/**/*.ts", "libs/**/*.ts", "test/**/*.ts", "tests/**/*.ts"],
   "exclude": ["node_modules", "dist", "coverage"]
 }

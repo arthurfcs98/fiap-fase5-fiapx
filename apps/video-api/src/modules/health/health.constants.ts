@@ -1,8 +1,6 @@
 /**
- * Lista de checagens de readiness (`HealthIndicatorFunction[]`) usada por GET /api/health/ready.
- * Vazia na E0. Na E3 entram, via `useFactory` no HealthModule:
- *   () => db.pingCheck('database')      (TypeOrmHealthIndicator)
- *   () => storage.isHealthy('storage')  (indicador próprio com HEAD no bucket)
- * RabbitMQ fica de fora de propósito: com outbox, a API aceita uploads com o broker fora.
+ * Readiness checks (`HealthIndicatorFunction[]`) run by `GET /api/health/ready`: Postgres and
+ * the storage buckets. RabbitMQ is left out on purpose: with the outbox the API keeps accepting
+ * uploads while the broker is down (contratos.md, section 8).
  */
 export const READINESS_CHECKS = Symbol('READINESS_CHECKS');

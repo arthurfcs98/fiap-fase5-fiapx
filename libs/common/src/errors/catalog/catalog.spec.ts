@@ -11,11 +11,13 @@ const httpErrors: HttpCase[] = [
   [() => AuthErrors.INVALID_CREDENTIALS(), 401, 'A0001', 'INVALID_CREDENTIALS'],
   [() => AuthErrors.EMAIL_ALREADY_REGISTERED(), 409, 'A0002', 'EMAIL_ALREADY_REGISTERED'],
   [() => AuthErrors.UNAUTHORIZED(), 401, 'A0003', 'UNAUTHORIZED'],
+  [() => AuthErrors.INVALID_PASSWORD_CONFIRMATION(), 400, 'A0004', 'INVALID_PASSWORD_CONFIRMATION'],
   [() => VideoErrors.NOT_FOUND('v1'), 404, 'V0001', 'VIDEO_NOT_FOUND'],
   [() => VideoErrors.UNSUPPORTED_FORMAT(['.mp4']), 400, 'V0002', 'UNSUPPORTED_FORMAT'],
   [() => VideoErrors.FILE_TOO_LARGE(95), 413, 'V0003', 'FILE_TOO_LARGE'],
   [() => VideoErrors.NOT_READY('v1', 'PROCESSING'), 409, 'V0004', 'VIDEO_NOT_READY'],
   [() => VideoErrors.INVALID_DOWNLOAD_SIGNATURE(), 403, 'V0005', 'INVALID_DOWNLOAD_SIGNATURE'],
+  [() => VideoErrors.ZIP_EXPIRED('v1'), 410, 'V0006', 'ZIP_EXPIRED'],
   [() => CommonErrors.VALIDATION(['campo']), 400, 'X0001', 'VALIDATION'],
   [() => CommonErrors.INTERNAL(), 500, 'X0002', 'INTERNAL'],
   [() => CommonErrors.UNAVAILABLE(5), 503, 'X0003', 'UNAVAILABLE'],
@@ -77,6 +79,8 @@ describe('Catálogo de erros', () => {
     expect(CommonErrors.UNAVAILABLE(5).appError.metadata).toEqual({ retryAfterSeconds: 5 });
     expect(CommonErrors.VALIDATION().appError.metadata).toEqual({ fields: [] });
     expect(AuthErrors.EMAIL_ALREADY_REGISTERED().appError.metadata).toEqual({});
+    expect(AuthErrors.INVALID_PASSWORD_CONFIRMATION().appError.metadata).toEqual({});
+    expect(VideoErrors.ZIP_EXPIRED('v1').appError.metadata).toEqual({ id: 'v1' });
     expect(ProcessingErrors.INVALID_VIDEO('moov atom not found').appError.metadata).toEqual({
       detail: 'moov atom not found',
     });

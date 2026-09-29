@@ -1,0 +1,180 @@
+###############################################################################
+# FIAP Frames — exemplos para a extensão REST Client do VS Code
+# (humao.rest-client). Alternativa ao Postman/Bruno, versionada no repositório.
+#
+# Como usar:
+#   1. make up                     (stack local em http://127.0.0.1:8080)
+#   2. abra este arquivo no VS Code e clique em "Send Request" acima de cada bloco,
+#      NA ORDEM: o cadastro gera o e-mail, o login guarda o token e o upload guarda o id
+#      (variáveis de requisição, sem ids fixos).
+# Explicação de cada resposta: docs/exemplos.md.
+###############################################################################
+
+@api = http://127.0.0.1:8080
+@password = senha-segura-123
+
+### Saúde (processo vivo)
+GET {{api}}/api/health/live
+
+### Prontidão (Postgres + buckets)
+GET {{api}}/api/health/ready
+
+### Cadastro SEM aceite da política → 400 X0001
+POST {{api}}/api/auth/register
+Content-Type: application/json
+
+{
+  "name": "Maria Silva",
+  "email": "sem-aceite.{{$timestamp}}@example.com",
+  "password": "{{password}}"
+}
+
+### Cadastro com aceite → 201 (o e-mail gerado aqui é reaproveitado abaixo)
+# @name register
+POST {{api}}/api/auth/register
+Content-Type: application/json
+
+{
+  "name": "Maria Silva",
+  "email": "maria.{{$timestamp}}.{{$randomInt 1000 9999}}@example.com",
+  "password": "{{password}}",
+  "acceptPrivacyPolicy": true
+}
+
+### Mesmo e-mail de novo → 409 A0002
+POST {{api}}/api/auth/register
+Content-Type: application/json
+
+{
+  "name": "Maria Silva",
+  "email": "{{register.response.body.$.email}}",
+  "password": "{{password}}",
+  "acceptPrivacyPolicy": true
+}
+
+### Login com senha errada → 401 A0001
+POST {{api}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{register.response.body.$.email}}",
+  "password": "senha-errada"
+}
+
+### Login → 200 { accessToken, tokenType, expiresIn }
+# @name login
+POST {{api}}/api/auth/login
+Content-Type: application/json
+
+{
+  "email": "{{register.response.body.$.email}}",
+  "password": "{{password}}"
+}
+
+@token = {{login.response.body.$.accessToken}}
+
+### Perfil → 200
+GET {{api}}/api/auth/me
+Authorization: Bearer {{token}}
+
+### Perfil sem token → 401 A0003
+GET {{api}}/api/auth/me
+
+### Upload do vídeo de 10 s → 202 QUEUED (Idempotency-Key e correlation id opcionais)
+# @name upload
+POST {{api}}/api/videos
+Authorization: Bearer {{token}}
+Idempotency-Key: exemplo-{{$guid}}
+x-correlation-id: exemplo-http-{{$timestamp}}
+Content-Type: multipart/form-data; boundary=----FiapFramesBoundary
+
+------FiapFramesBoundary
+Content-Disposition: form-data; name="video"; filename="sample-ok-10s.mp4"
+Content-Type: video/mp4
+
+< ../examples/sample-ok-10s.mp4
+------FiapFramesBoundary--
+
+@videoId = {{upload.response.body.$.id}}
+
+### Upload do vídeo corrompido → 202 (depois FAILED P0001 + e-mail no Mailpit)
+# @name uploadCorrupt
+POST {{api}}/api/videos
+Authorization: Bearer {{token}}
+Content-Type: multipart/form-data; boundary=----FiapFramesBoundary
+
+------FiapFramesBoundary
+Content-Disposition: form-data; name="video"; filename="sample-corrupt.mp4"
+Content-Type: video/mp4
+
+< ../examples/sample-corrupt.mp4
+------FiapFramesBoundary--
+
+### Upload de um arquivo que não é vídeo → 400 V0002
+POST {{api}}/api/videos
+Authorization: Bearer {{token}}
+Content-Type: multipart/form-data; boundary=----FiapFramesBoundary
+
+------FiapFramesBoundary
+Content-Disposition: form-data; name="video"; filename="anotacoes.txt"
+Content-Type: text/plain
+
+isto não é um vídeo
+------FiapFramesBoundary--
+
+### Listagem (só os meus vídeos) → 200 { items, total, page, limit }
+GET {{api}}/api/videos?page=1&limit=20
+Authorization: Bearer {{token}}
+
+### Listagem filtrada por status
+GET {{api}}/api/videos?status=FAILED
+Authorization: Bearer {{token}}
+
+### Detalhe com histórico (repita até COMPLETED)
+GET {{api}}/api/videos/{{videoId}}
+Authorization: Bearer {{token}}
+
+### Detalhe do vídeo corrompido (FAILED, errorCode P0001)
+GET {{api}}/api/videos/{{uploadCorrupt.response.body.$.id}}
+Authorization: Bearer {{token}}
+
+### Vídeo inexistente (ou de outro usuário) → 404 V0001
+GET {{api}}/api/videos/00000000-0000-4000-8000-000000000000
+Authorization: Bearer {{token}}
+
+### Link de download assinado (5 min) → 200 { url, expiresAt }
+# @name downloadUrl
+POST {{api}}/api/videos/{{videoId}}/download-url
+Authorization: Bearer {{token}}
+
+### Link de download de vídeo FAILED → 409 V0004
+POST {{api}}/api/videos/{{uploadCorrupt.response.body.$.id}}/download-url
+Authorization: Bearer {{token}}
+
+### Download do zip (o link não precisa de token) → 200 application/zip
+GET {{downloadUrl.response.body.$.url}}
+
+### Exportar meus dados (LGPD, art. 18 II e V) → 200
+GET {{api}}/api/me/data
+Authorization: Bearer {{token}}
+
+### Excluir a conta com a senha errada → 400 A0004
+DELETE {{api}}/api/me
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "password": "senha-errada" }
+
+### Excluir a conta (LGPD, art. 18 VI) → 204 — rode por último!
+DELETE {{api}}/api/me
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{ "password": "{{password}}" }
+
+### Token de conta excluída → 401 A0003
+GET {{api}}/api/auth/me
+Authorization: Bearer {{token}}
+
+### Mailpit: e-mails recebidos por este usuário
+GET http://127.0.0.1:8025/api/v1/search?query=to:"{{register.response.body.$.email}}"

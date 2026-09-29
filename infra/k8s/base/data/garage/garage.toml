@@ -1,0 +1,27 @@
+# Garage (S3-compatível) em nó único, para dev local e CI.
+#
+# Segredos NÃO ficam aqui: vêm do ambiente do container (gerados no .env por
+# scripts/dev-secrets.sh):
+#   GARAGE_RPC_SECRET     32 bytes em hex (openssl rand -hex 32)
+#   GARAGE_ADMIN_TOKEN    token da API admin (porta 3903), usado só pelo garage-init
+#   GARAGE_METRICS_TOKEN  token do /metrics da API admin (Prometheus, na E6)
+#
+# Layout, buckets e chave de acesso são criados pelo one-shot infra/garage/init.mjs.
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+
+# Um nó só: sem replicação. Em produção (VM compartilhada) continua 1 nó, com volume persistente.
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+
+[s3_api]
+s3_region = "garage"
+api_bind_addr = "[::]:3900"
+root_domain = ".s3.garage.localhost"
+
+[admin]
+api_bind_addr = "[::]:3903"

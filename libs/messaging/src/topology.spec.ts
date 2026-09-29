@@ -61,6 +61,7 @@ describe('topologia RabbitMQ (contratos.md, seção 2)', () => {
     expect(routing(QUEUES.notificationEvents)).toEqual([
       'fiapx.events/video.failed',
       'fiapx.events/video.completed',
+      'fiapx.events/user.deleted',
     ]);
   });
 
@@ -73,7 +74,9 @@ describe('topologia RabbitMQ (contratos.md, seção 2)', () => {
       'video.processing.failed',
       'video.failed',
       'video.completed',
+      'user.deleted',
     ]);
+    expect(ROUTING_KEYS.userDeleted).toBe('user.deleted');
   });
 
   it('as routing keys de processamento casam com o binding video.processing.*', () => {
@@ -130,11 +133,54 @@ describe('topologia RabbitMQ (contratos.md, seção 2)', () => {
           },
         ]),
       );
-      expect(topology.bindings).toHaveLength(5 + 4); // 5 bindings principais + 4 DLQs
+      expect(topology.bindings).toHaveLength(6 + 4); // 6 bindings principais + 4 DLQs
+    });
+
+    it('snapshot: todos os bindings, na ordem de declaração', () => {
+      expect(topology.bindings.map((b) => `${b.exchange} --${b.routingKey}--> ${b.queue}`)).toEqual(
+        [
+          'fiapx.events --video.uploaded--> worker.video-uploaded',
+          'fiapx.dlx --worker.video-uploaded--> worker.video-uploaded.dlq',
+          'fiapx.events --video.processing.*--> api.video-processing',
+          'fiapx.dlx --api.video-processing--> api.video-processing.dlq',
+          'fiapx.dlx --worker.video-uploaded--> api.video-deadletter',
+          'fiapx.dlx --api.video-deadletter--> api.video-deadletter.dlq',
+          'fiapx.events --video.failed--> notification.events',
+          'fiapx.events --video.completed--> notification.events',
+          'fiapx.events --user.deleted--> notification.events',
+          'fiapx.dlx --notification.events--> notification.events.dlq',
+        ],
+      );
+    });
+
+    it('user.deleted só chega em notification.events (nenhuma outra fila recebe)', () => {
+      const targets = topology.bindings
+        .filter((b) => b.exchange === EXCHANGES.events && b.routingKey === 'user.deleted')
+        .map((b) => b.queue);
+      expect(targets).toEqual([QUEUES.notificationEvents]);
+      expect('user.deleted'.startsWith('video.processing.')).toBe(false);
     });
 
     it('filas de retry não têm binding (publicação direta pela default exchange)', () => {
       expect(topology.bindings.some((b) => b.queue.includes('.retry.'))).toBe(false);
     });
+  });
+
+  describe('TTLs de retry customizados (só testes de integração)', () => {
+    it('buildTopology aplica os TTLs informados nas filas .retry.N', () => {
+      const topology = buildTopology({ retryDelaysMs: [100, 200, 300] });
+      const ttl = (name: string) =>
+        topology.queues.find((q) => q.name === name)?.arguments['x-message-ttl'];
+      expect(ttl('notification.events.retry.1')).toBe(100);
+      expect(ttl('notification.events.retry.3')).toBe(300);
+      expect(retryQueueArguments('q', 2, [1, 2, 3])['x-message-ttl']).toBe(2);
+    });
+
+    it.each([[[1, 2]], [[1, 2, 0]], [[1, 2, 3.5]], [[1, 2, 3, 4]]])(
+      'rejeita retryDelaysMs inválido %p',
+      (delays) => {
+        expect(() => buildTopology({ retryDelaysMs: delays })).toThrow(RangeError);
+      },
+    );
   });
 });

@@ -1,0 +1,48 @@
+# KEDA (autoscaling por eventos) instalado pelo helm-controller que já vem no K3s.
+# Aplicar (root, na VM):  ./35-keda.sh --yes   (ou: k3s kubectl apply -f k8s/keda-helmchart.yaml)
+# Remover:                ./35-keda.sh --revert --yes
+#
+# Por que KEDA: o HPA só enxerga CPU/memória. O worker precisa escalar pelo TAMANHO DA FILA
+# worker.video-uploaded no RabbitMQ; o KEDA lê a fila e alimenta um HPA gerado por ele.
+# Recursos (fora do namespace fiapx, README seção 4.3): 60m / 112Mi pedidos (25+25+10 m;
+# 48+40+24 Mi) e 500m / 320Mi de teto (250+150+100 m; 160+96+64 Mi).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keda
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+---
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: keda
+  namespace: kube-system
+spec:
+  repo: https://kedacore.github.io/charts
+  chart: keda
+  version: "2.21.0"
+  targetNamespace: keda
+  valuesContent: |-
+    # Um só operador e um só metrics-apiserver: nó único, sem HA.
+    operator:
+      replicaCount: 1
+    metricsServer:
+      replicaCount: 1
+    webhooks:
+      replicaCount: 1
+    resources:
+      operator:
+        requests: { cpu: 25m, memory: 48Mi }
+        limits: { cpu: 250m, memory: 160Mi }
+      metricServer:
+        requests: { cpu: 25m, memory: 40Mi }
+        limits: { cpu: 150m, memory: 96Mi }
+      webhooks:
+        requests: { cpu: 10m, memory: 24Mi }
+        limits: { cpu: 100m, memory: 64Mi }
+    prometheus:
+      operator:
+        enabled: true
+      metricServer:
+        enabled: true

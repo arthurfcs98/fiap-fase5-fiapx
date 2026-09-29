@@ -1,0 +1,58 @@
+# =============================================================================
+# infra/k8s/observability — os três sinais (contratos.md, seção 13), no namespace fiapx:
+#
+#   métricas  Prometheus (kubernetes_sd por anotação, regras de SLO e 8 alertas)
+#   logs      Grafana Alloy (lê os logs pela API) -> Loki (single binary, 72 h)
+#   visual    Grafana (datasources Prometheus + Loki, dashboards provisionados)
+#
+# Por que no namespace fiapx (e não num "observability" próprio): decisão D21 do
+# infra/vm/README.md. O CD só enxerga o fiapx e não cria Namespace, quota nem RBAC; a quota
+# (tabela 4.3) já conta Prometheus, Grafana, Loki e Alloy. O RBAC de leitura (pods, pods/log,
+# nodes/metrics) é aplicado pelo root: infra/vm/k8s/observability-rbac.yaml.
+# =============================================================================
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: fiapx
+    includeSelectors: false
+    includeTemplates: true
+
+resources:
+  - prometheus/objects.yaml
+  - prometheus/deployment.yaml
+  - loki/statefulset.yaml
+  - alloy/objects.yaml
+  - alloy/daemonset.yaml
+  - grafana/objects.yaml
+  - grafana/deployment.yaml
+
+configMapGenerator:
+  - name: prometheus-config
+    files:
+      - prometheus/prometheus.yml
+  - name: prometheus-rules
+    files:
+      - prometheus/rules/fiapx-slo.rules.yml
+      - prometheus/rules/fiapx-alerts.rules.yml
+  # Camada de dados (o Loki é um StatefulSet com volume): aplicado antes dos Jobs e dos apps.
+  - name: loki-config
+    files:
+      - loki/loki.yaml
+    options:
+      labels:
+        fiapx.io/tier: data
+  - name: alloy-config
+    files:
+      - alloy/config.alloy
+  - name: grafana-datasources
+    files:
+      - grafana/provisioning/datasources.yaml
+  - name: grafana-dashboard-providers
+    files:
+      - grafana/provisioning/dashboards.yaml
+  - name: grafana-dashboards
+    files:
+      - grafana/dashboards/fiapx-pipeline.json
+      - grafana/dashboards/fiapx-slos.json

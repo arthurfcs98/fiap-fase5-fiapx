@@ -1,0 +1,111 @@
+# =============================================================================
+# infra/vm/k8s/deployer-rbac.yaml — identidade do CD dentro do cluster.
+#
+# Aplicado SÓ por root (kubeconfig admin do K3s) pelo 40-deployer-access.sh, depois do
+# namespace-guard.yaml. O deploy.sh usa o token desta ServiceAccount e NÃO consegue:
+#   - ler Secrets (nenhum verbo);
+#   - criar pods diretamente, nem exec/attach/port-forward;
+#   - mexer em RBAC, Namespace, ResourceQuota, LimitRange ou em outros namespaces;
+#   - criar Role/RoleBinding/ClusterRole (nem para os apps: ver observability-rbac.yaml);
+#   - apagar Deployments/StatefulSets/DaemonSets/Services/PVCs (remoção é manual, por root).
+#
+# Limite honesto do modelo: quem cria Deployments no namespace consegue montar qualquer
+# Secret DO NAMESPACE num pod. O deployer lê indiretamente os segredos do FIAP X, nunca os
+# de outros namespaces nem o host (o Pod Security "baseline" do namespace barra hostPath,
+# privileged e hostNetwork). Quem faz merge na main já teria esse poder pelo código do app.
+# =============================================================================
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fiapx-deployer
+  namespace: fiapx
+  labels:
+    app.kubernetes.io/part-of: fiapx
+automountServiceAccountToken: false
+---
+# Token de longa duração para o kubeconfig do usuário Linux fiapx-deploy.
+# Secret criado à mão NÃO é apagado pelo LegacyServiceAccountTokenCleanUp (ele só invalida
+# tokens gerados automaticamente e referenciados em .secrets da ServiceAccount).
+# Rotação: kubectl -n fiapx delete secret fiapx-deployer-token && ./40-deployer-access.sh --yes
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fiapx-deployer-token
+  namespace: fiapx
+  labels:
+    app.kubernetes.io/part-of: fiapx
+  annotations:
+    kubernetes.io/service-account.name: fiapx-deployer
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: fiapx-deployer
+  namespace: fiapx
+  labels:
+    app.kubernetes.io/part-of: fiapx
+rules:
+  # --- O que o overlay aplica. Server-side apply usa get + patch (create para objeto novo).
+  - apiGroups: [""]
+    resources: [configmaps, services, serviceaccounts, persistentvolumeclaims]
+    verbs: [get, list, watch, create, patch, update]
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets]   # daemonsets: o Grafana Alloy (logs)
+    verbs: [get, list, watch, create, patch, update]
+  - apiGroups: [batch]
+    resources: [jobs]
+    verbs: [get, list, watch, create, patch, update, delete]   # delete: recriar Job que falhou
+  - apiGroups: [batch]
+    resources: [cronjobs]
+    verbs: [get, list, watch, create, patch, update]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [get, list, watch, create, patch, update]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [get, list, watch, create, patch, update]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [get, list, watch, create, patch, update]
+  - apiGroups: [keda.sh]
+    resources: [scaledobjects, triggerauthentications]
+    verbs: [get, list, watch, create, patch, update]
+  - apiGroups: [traefik.io]
+    resources: [middlewares]       # só no próprio namespace (allowCrossNamespace=false no Traefik)
+    verbs: [get, list, watch, create, patch, update]
+  # --- Leitura: rollout status, diagnóstico e o comando "status".
+  - apiGroups: [""]
+    resources: [pods, pods/log, events, endpoints, resourcequotas, limitranges]
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources: [replicasets, controllerrevisions]
+    verbs: [get, list, watch]
+  - apiGroups: [events.k8s.io]
+    resources: [events]
+    verbs: [get, list, watch]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+  # Deliberadamente AUSENTE: secrets (qualquer verbo), pods create/exec/attach/portforward,
+  # serviceaccounts/token, roles/rolebindings, resourcequotas/limitranges (escrita), namespaces,
+  # networkpolicies (o K3s roda sem o controlador de NetworkPolicy: ver README, "Decisões"),
+  # e delete em deployments/statefulsets/daemonsets/services/PVCs.
+  # RBAC de quem roda DENTRO do namespace (Prometheus e Alloy precisam listar pods e ler logs)
+  # também não é do CD: fica em observability-rbac.yaml, aplicado pelo root.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: fiapx-deployer
+  namespace: fiapx
+  labels:
+    app.kubernetes.io/part-of: fiapx
+subjects:
+  - kind: ServiceAccount
+    name: fiapx-deployer
+    namespace: fiapx
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: fiapx-deployer

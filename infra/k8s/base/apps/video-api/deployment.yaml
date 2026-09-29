@@ -1,0 +1,130 @@
+# video-api: HTTP público (via Ingress), outbox, consumidores de resultado e jobs de retenção.
+# Réplicas: SEM o campo "replicas" (regra 4 do deploy.sh): o HPA (hpa.yaml) é o dono, 1-2.
+# Recursos e estratégia: infra/vm/README.md, seção 4.3 (orçamento do namespace).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: video-api
+  labels:
+    app.kubernetes.io/name: video-api
+    app.kubernetes.io/component: api
+spec:
+  revisionHistoryLimit: 3
+  progressDeadlineSeconds: 180
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # sobe o novo antes de tirar o velho: deploy sem downtime
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: video-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: video-api
+        app.kubernetes.io/component: api
+      annotations:
+        # Descoberta do Prometheus (observability/prometheus/prometheus.yml). O /metrics da
+        # 9464 exige Bearer (METRICS_TOKEN): o job "fiapx-services" usa o mesmo token.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9464"
+        prometheus.io/path: /metrics
+        fiapx.io/metrics-auth: bearer
+    spec:
+      priorityClassName: fiapx-app
+      automountServiceAccountToken: false   # o app não fala com a API do Kubernetes
+      enableServiceLinks: false             # sem variáveis *_SERVICE_HOST/*_PORT injetadas
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000                     # usuário "node" da imagem (Dockerfile: USER 1000:1000)
+        runAsGroup: 1000
+        fsGroup: 1000                       # arquivos dos Secrets legíveis pelo grupo 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: video-api
+          image: ghcr.io/arthurfcs98/fiapx-video-api
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+            - name: metrics
+              containerPort: 9464
+          envFrom:
+            - configMapRef:
+                name: video-api-config
+          env:
+            # Segredos por arquivo (<VAR>_FILE): não aparecem em "kubectl describe" nem no
+            # ambiente do processo. Arquivos criados pelo scripts/bootstrap-secrets.sh.
+            - name: DB_PASSWORD_FILE
+              value: /run/secrets/fiapx/DB_PASSWORD
+            - name: RABBITMQ_URL_FILE
+              value: /run/secrets/fiapx/RABBITMQ_URL
+            - name: REDIS_URL_FILE
+              value: /run/secrets/fiapx/REDIS_URL
+            - name: S3_ACCESS_KEY_ID_FILE
+              value: /run/secrets/fiapx/S3_ACCESS_KEY_ID
+            - name: S3_SECRET_ACCESS_KEY_FILE
+              value: /run/secrets/fiapx/S3_SECRET_ACCESS_KEY
+            - name: JWT_SECRET_FILE
+              value: /run/secrets/fiapx/JWT_SECRET
+            - name: DOWNLOAD_URL_SECRET_FILE
+              value: /run/secrets/fiapx/DOWNLOAD_URL_SECRET
+            - name: METRICS_TOKEN_FILE
+              value: /run/secrets/fiapx/METRICS_TOKEN
+          volumeMounts:
+            - name: secrets
+              mountPath: /run/secrets/fiapx
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 150m
+              memory: 160Mi
+              ephemeral-storage: 32Mi
+            limits:
+              cpu: 500m
+              memory: 320Mi             # request < limit: QoS Burstable (política fiapx-sem-guaranteed)
+              ephemeral-storage: 256Mi
+          startupProbe:
+            httpGet:
+              path: /api/health/live
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30        # até 60 s para subir
+          livenessProbe:
+            httpGet:
+              path: /api/health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            # /ready confere Postgres + storage (não RabbitMQ: o outbox segura os eventos).
+            httpGet:
+              path: /api/health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              # Dá tempo ao Traefik de tirar o pod do balanceamento antes do SIGTERM.
+              exec:
+                command: ["sleep", "5"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: secrets
+          secret:
+            secretName: fiapx-video-api
+            defaultMode: 0440
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi

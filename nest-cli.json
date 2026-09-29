@@ -15,7 +15,10 @@
       "root": "apps/video-api",
       "entryFile": "main",
       "sourceRoot": "apps/video-api/src",
-      "compilerOptions": { "tsConfigPath": "apps/video-api/tsconfig.app.json" }
+      "compilerOptions": {
+        "tsConfigPath": "apps/video-api/tsconfig.app.json",
+        "webpackConfigPath": "apps/video-api/webpack.config.js"
+      }
     },
     "video-worker": {
       "type": "application",
@@ -29,7 +32,10 @@
       "root": "apps/notification-service",
       "entryFile": "main",
       "sourceRoot": "apps/notification-service/src",
-      "compilerOptions": { "tsConfigPath": "apps/notification-service/tsconfig.app.json" }
+      "compilerOptions": {
+        "tsConfigPath": "apps/notification-service/tsconfig.app.json",
+        "webpackConfigPath": "apps/notification-service/webpack.config.js"
+      }
     },
     "common": {
       "type": "library",

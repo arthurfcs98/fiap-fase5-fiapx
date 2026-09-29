@@ -1,0 +1,42 @@
+# KEDA: escala o video-worker pelo tamanho da fila worker.video-uploaded (o HPA sozinho só
+# enxerga CPU/memória). O KEDA cria e mantém um HPA "keda-hpa-video-worker" a partir daqui.
+#
+# - protocol http: a API de management devolve prontas + em processamento (unacked). Com
+#   AMQP o KEDA só veria as prontas: 1 vídeo em processamento + 1 na fila daria 1 réplica
+#   (e não 2), e um scale-in poderia mirar o worker ocupado.
+# - value "1" = prefetch por réplica: 1 mensagem por worker.
+# - 1 a 2 réplicas: decisão D6 do infra/vm/README.md (2 x 1 vCPU é o teto que protege a VM).
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: video-worker
+  labels:
+    app.kubernetes.io/name: video-worker
+    app.kubernetes.io/component: worker
+spec:
+  scaleTargetRef:
+    name: video-worker
+  # Com mínimo 1 (nunca escala a zero), quem decide entre 1 e 2 é o HPA que o KEDA cria: ele
+  # consulta a métrica a cada 15 s. pollingInterval/cooldownPeriod só valem para o 0 <-> 1, por
+  # isso ficam de fora (o webhook do KEDA 2.21 avisa quando estão configurados sem efeito).
+  minReplicaCount: 1
+  maxReplicaCount: 2
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: 120
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+  triggers:
+    - type: rabbitmq
+      metadata:
+        protocol: http
+        mode: QueueLength
+        value: "1"
+        queueName: worker.video-uploaded
+        vhostName: /
+      authenticationRef:
+        name: video-worker-rabbitmq

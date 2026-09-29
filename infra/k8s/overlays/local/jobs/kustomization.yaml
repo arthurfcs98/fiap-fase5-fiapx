@@ -1,0 +1,15 @@
+# Jobs (setup e migrate) no k3d: os mesmos de infra/k8s/jobs com as imagens "local".
+# Na VM quem faz isto é o deploy.sh (nameSuffix -<sha7> + digest das imagens).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../jobs
+
+images:
+  - name: ghcr.io/arthurfcs98/fiapx-video-api
+    newTag: local
+  - name: ghcr.io/arthurfcs98/fiapx-video-worker
+    newTag: local
+  - name: ghcr.io/arthurfcs98/fiapx-notification-service
+    newTag: local

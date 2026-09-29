@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta
+      name="description"
+      content="FIAP Frames: envie vídeos, extraia 1 frame por segundo e baixe tudo em um arquivo .zip."
+    />
+    <meta name="referrer" content="no-referrer" />
+    <title>FIAP Frames · Vídeo em frames</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link
+      rel="preload"
+      href="/fonts/bricolage-grotesque-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="/css/styles.css" />
+    <script type="module" src="/js/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Pular para o conteúdo</a>
+
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="/" aria-label="FIAP Frames, página inicial">
+          <span class="brand-mark" aria-hidden="true">FIAP<span class="brand-x">Frames</span></span>
+          <span class="brand-tag">vídeo em frames</span>
+        </a>
+
+        <nav id="app-nav" class="app-nav" aria-label="Seções" hidden>
+          <a class="nav-link" href="#/videos" data-route="videos">Vídeos</a>
+          <a class="nav-link" href="#/meus-dados" data-route="meus-dados">Meus dados</a>
+        </nav>
+
+        <div id="user-area" class="user-area" hidden>
+          <span class="user-chip">
+            <span id="user-initials" class="avatar" aria-hidden="true">?</span>
+            <span id="user-name" class="user-name"></span>
+          </span>
+          <button id="logout-button" class="btn btn-ghost btn-sm" type="button">Sair</button>
+        </div>
+      </div>
+      <div class="filmstrip" aria-hidden="true"></div>
+    </header>
+
+    <main id="main" class="page" tabindex="-1">
+      <!-- Boot: checking the stored session -->
+      <section id="view-boot" class="view view-boot" aria-live="polite">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Carregando…</span>
+      </section>
+
+      <!-- Signed out: login and registration -->
+      <section id="view-auth" class="view view-auth" hidden aria-labelledby="auth-title">
+        <div class="auth-intro">
+          <p class="eyebrow">Hackathon FIAP SOAT · processamento de vídeos</p>
+          <h1 id="auth-title" class="display">Cada segundo do seu vídeo vira uma imagem.</h1>
+          <p class="lede">
+            Envie vários vídeos de uma vez. Extraímos 1 frame por segundo e entregamos tudo em um
+            arquivo <span class="mono">.zip</span>. Se algo der errado, você recebe um e-mail.
+          </p>
+
+          <ol class="steps">
+            <li>
+              <span class="step-num">01</span>
+              <span class="step-body">
+                <strong>Envie</strong>
+                <span>MP4, AVI, MOV, MKV, WMV, FLV ou WEBM, até 95 MB cada.</span>
+              </span>
+            </li>
+            <li>
+              <span class="step-num">02</span>
+              <span class="step-body">
+                <strong>Processamos</strong>
+                <span>Os vídeos entram numa fila e são processados em paralelo.</span>
+              </span>
+            </li>
+            <li>
+              <span class="step-num">03</span>
+              <span class="step-body">
+                <strong>Baixe</strong>
+                <span>O .zip com os frames fica disponível por 7 dias.</span>
+              </span>
+            </li>
+          </ol>
+
+          <div class="contact-sheet" aria-hidden="true">
+            <span class="frame"><span class="frame-label">frame_0001.png</span></span>
+            <span class="frame"><span class="frame-label">frame_0002.png</span></span>
+            <span class="frame"><span class="frame-label">frame_0003.png</span></span>
+            <span class="frame"><span class="frame-label">frame_0004.png</span></span>
+            <span class="frame"><span class="frame-label">frame_0005.png</span></span>
+            <span class="frame"><span class="frame-label">frame_0006.png</span></span>
+            <span class="frame"><span class="frame-label">frame_0007.png</span></span>
+            <span class="frame"><span class="frame-label">frame_0008.png</span></span>
+          </div>
+        </div>
+
+        <div class="card auth-card">
+          <div id="auth-notice" class="alert" role="status" hidden></div>
+
+          <div class="tabs" role="tablist" aria-label="Acesso">
+            <button
+              id="tab-login"
+              class="tab"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="panel-login"
+            >
+              Entrar
+            </button>
+            <button
+              id="tab-register"
+              class="tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="panel-register"
+              tabindex="-1"
+            >
+              Criar conta
+            </button>
+          </div>
+
+          <div id="panel-login" class="tab-panel" role="tabpanel" aria-labelledby="tab-login">
+            <form id="login-form" class="form" novalidate>
+              <div class="field">
+                <label for="login-email">E-mail</label>
+                <input
+                  id="login-email"
+                  name="email"
+                  type="email"
+                  autocomplete="username"
+                  inputmode="email"
+                  spellcheck="false"
+                  required
+                />
+              </div>
+              <div class="field">
+                <label for="login-password">Senha</label>
+                <input
+                  id="login-password"
+                  name="password"
+                  type="password"
+                  autocomplete="current-password"
+                  required
+                />
+              </div>
+              <div id="login-error" class="alert" role="alert" hidden></div>
+              <button id="login-submit" class="btn btn-primary btn-block" type="submit">
+                <span class="btn-label">Entrar</span>
+              </button>
+              <p class="form-foot">
+                Ainda não tem conta?
+                <a href="#/cadastro" class="link">Crie uma agora</a>.
+              </p>
+            </form>
+          </div>
+
+          <div
+            id="panel-register"
+            class="tab-panel"
+            role="tabpanel"
+            aria-labelledby="tab-register"
+            hidden
+          >
+            <form id="register-form" class="form" novalidate>
+              <div class="field">
+                <label for="register-name">Nome</label>
+                <input
+                  id="register-name"
+                  name="name"
+                  type="text"
+                  autocomplete="name"
+                  maxlength="120"
+                  required
+                />
+              </div>
+              <div class="field">
+                <label for="register-email">E-mail</label>
+                <input
+                  id="register-email"
+                  name="email"
+                  type="email"
+                  autocomplete="email"
+                  inputmode="email"
+                  spellcheck="false"
+                  required
+                />
+                <p class="hint">Usado para entrar e para avisar quando um vídeo falhar.</p>
+              </div>
+              <div class="field">
+                <label for="register-password">Senha</label>
+                <input
+                  id="register-password"
+                  name="password"
+                  type="password"
+                  autocomplete="new-password"
+                  minlength="8"
+                  aria-describedby="register-password-hint"
+                  required
+                />
+                <p id="register-password-hint" class="hint">Pelo menos 8 caracteres.</p>
+              </div>
+              <div class="field">
+                <label for="register-password-confirm">Confirme a senha</label>
+                <input
+                  id="register-password-confirm"
+                  name="passwordConfirm"
+                  type="password"
+                  autocomplete="new-password"
+                  required
+                />
+              </div>
+              <div class="check">
+                <input id="register-privacy" name="acceptPrivacyPolicy" type="checkbox" required />
+                <label for="register-privacy">
+                  Li e aceito a
+                  <a href="/privacidade.html" target="_blank" rel="noopener" class="link"
+                    >Política de Privacidade</a
+                  >.
+                </label>
+              </div>
+              <div id="register-error" class="alert" role="alert" hidden></div>
+              <button id="register-submit" class="btn btn-primary btn-block" type="submit">
+                <span class="btn-label">Criar conta</span>
+              </button>
+              <p class="form-foot">Já tem conta? <a href="#/entrar" class="link">Entre</a>.</p>
+            </form>
+          </div>
+        </div>
+      </section>
+
+      <!-- Signed in: upload and list -->
+      <section id="view-videos" class="view" hidden aria-labelledby="videos-title">
+        <div class="view-head">
+          <div>
+            <p class="eyebrow">Painel</p>
+            <h1 id="videos-title" class="display display-sm">Seus vídeos</h1>
+          </div>
+          <p id="poll-indicator" class="poll" data-state="idle">
+            <span class="poll-dot" aria-hidden="true"></span>
+            <span id="poll-text">Atualiza sozinho a cada 3 s</span>
+          </p>
+        </div>
+
+        <div class="card upload-card">
+          <div class="card-head">
+            <h2 class="card-title">Enviar vídeos</h2>
+            <p class="card-sub mono">
+              .mp4 .avi .mov .mkv .wmv .flv .webm · até <span id="max-upload-mb">95</span> MB cada
+            </p>
+          </div>
+
+          <label id="dropzone" class="dropzone">
+            <input
+              id="file-input"
+              class="visually-hidden"
+              type="file"
+              multiple
+              accept=".mp4,.avi,.mov,.mkv,.wmv,.flv,.webm,video/*"
+            />
+            <span class="dropzone-icon" aria-hidden="true"></span>
+            <span class="dropzone-title">Arraste vídeos para cá</span>
+            <span class="dropzone-sub">ou <span class="link">escolha no computador</span></span>
+          </label>
+
+          <div id="upload-panel" class="upload-panel" hidden>
+            <ul id="upload-list" class="upload-list"></ul>
+            <div class="upload-actions">
+              <p id="upload-summary" class="upload-summary" aria-live="polite"></p>
+              <div class="button-row">
+                <button id="upload-clear" class="btn btn-ghost" type="button">Limpar lista</button>
+                <button id="upload-start" class="btn btn-primary" type="button" disabled>
+                  <span class="btn-label">Enviar</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card videos-card">
+          <div class="card-head card-head-row">
+            <div>
+              <h2 class="card-title">Processamentos</h2>
+              <p id="videos-total" class="card-sub"></p>
+            </div>
+            <div class="toolbar">
+              <label class="select-wrap">
+                <span class="visually-hidden">Filtrar por status</span>
+                <select id="status-filter">
+                  <option value="">Todos os status</option>
+                  <option value="QUEUED">Na fila</option>
+                  <option value="PROCESSING">Processando</option>
+                  <option value="COMPLETED">Concluído</option>
+                  <option value="FAILED">Falhou</option>
+                </select>
+              </label>
+              <button id="videos-refresh" class="btn btn-ghost btn-sm" type="button">
+                <span class="btn-label">Atualizar</span>
+              </button>
+            </div>
+          </div>
+
+          <div id="videos-error" class="alert" role="alert" hidden></div>
+
+          <div class="table-wrap">
+            <table class="videos-table">
+              <caption class="visually-hidden">
+                Vídeos enviados e status do processamento
+              </caption>
+              <thead>
+                <tr>
+                  <th scope="col">Vídeo</th>
+                  <th scope="col">Enviado</th>
+                  <th scope="col">Status</th>
+                  <th scope="col" class="num">Frames</th>
+                  <th scope="col" class="actions-col">
+                    <span class="visually-hidden">Ações</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody id="videos-body"></tbody>
+            </table>
+          </div>
+
+          <div id="videos-empty" class="empty" hidden>
+            <span class="empty-art" aria-hidden="true"></span>
+            <p id="videos-empty-text">Nenhum vídeo ainda. Envie o primeiro aqui em cima.</p>
+          </div>
+
+          <div id="videos-loading" class="loading-row" hidden>
+            <span class="spinner" aria-hidden="true"></span>
+            <span>Carregando vídeos…</span>
+          </div>
+
+          <nav id="pagination" class="pagination" aria-label="Paginação" hidden>
+            <button id="page-prev" class="btn btn-ghost btn-sm" type="button">Anterior</button>
+            <span id="page-label" class="page-label mono"></span>
+            <button id="page-next" class="btn btn-ghost btn-sm" type="button">Próxima</button>
+          </nav>
+        </div>
+      </section>
+
+      <!-- Signed in: LGPD self-service -->
+      <section id="view-account" class="view" hidden aria-labelledby="account-title">
+        <div class="view-head">
+          <div>
+            <p class="eyebrow">Privacidade · LGPD</p>
+            <h1 id="account-title" class="display display-sm">Meus dados</h1>
+          </div>
+        </div>
+
+        <div class="account-grid">
+          <div class="card">
+            <div class="card-head">
+              <h2 class="card-title">Dados da conta</h2>
+              <p class="card-sub">O que guardamos para identificar você.</p>
+            </div>
+            <dl class="facts">
+              <div>
+                <dt>Nome</dt>
+                <dd id="account-name">—</dd>
+              </div>
+              <div>
+                <dt>E-mail</dt>
+                <dd id="account-email">—</dd>
+              </div>
+              <div>
+                <dt>Identificador</dt>
+                <dd id="account-id" class="mono">—</dd>
+              </div>
+            </dl>
+            <p class="small">
+              A senha nunca é guardada: só um hash bcrypt. Os vídeos originais são apagados assim
+              que o processamento termina e os arquivos .zip, depois de 7 dias. Detalhes na
+              <a href="/privacidade.html" class="link">Política de Privacidade</a>.
+            </p>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <h2 class="card-title">Baixar meus dados</h2>
+              <p class="card-sub">Acesso e portabilidade (art. 18, II e V da LGPD).</p>
+            </div>
+            <p class="small">
+              Um arquivo JSON com seu cadastro (sem a senha), todos os seus vídeos e o histórico de
+              status de cada um.
+            </p>
+            <div id="export-error" class="alert" role="alert" hidden></div>
+            <button id="export-button" class="btn btn-secondary" type="button">
+              <span class="btn-label">Baixar meus dados (JSON)</span>
+            </button>
+          </div>
+
+          <div class="card card-danger">
+            <div class="card-head">
+              <h2 class="card-title">Excluir minha conta</h2>
+              <p class="card-sub">Eliminação (art. 18, VI da LGPD).</p>
+            </div>
+            <ul class="bullets small">
+              <li>Apaga seu cadastro, todos os vídeos, os arquivos .zip e o histórico.</li>
+              <li>Os registros de e-mails enviados a você são anonimizados.</li>
+              <li>Você sai de todas as sessões. Não dá para desfazer.</li>
+            </ul>
+            <button id="delete-open" class="btn btn-danger" type="button">
+              Excluir minha conta
+            </button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="footer-inner">
+        <span>FIAP Frames · Hackathon FIAP SOAT</span>
+        <a class="link" href="/privacidade.html">Política de Privacidade</a>
+      </div>
+    </footer>
+
+    <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+
+    <dialog id="delete-dialog" class="dialog" aria-labelledby="delete-title">
+      <form id="delete-form" class="form" novalidate>
+        <h2 id="delete-title" class="dialog-title">Excluir sua conta?</h2>
+        <p class="small">
+          Seu cadastro, seus vídeos, os arquivos .zip e todo o histórico serão apagados agora. Esta
+          ação não pode ser desfeita.
+        </p>
+        <!-- Lets password managers match the account (value set by account.js). -->
+        <input
+          id="delete-username"
+          name="username"
+          type="email"
+          autocomplete="username"
+          hidden
+          readonly
+        />
+        <div class="field">
+          <label for="delete-password">Confirme com sua senha</label>
+          <input
+            id="delete-password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+          />
+        </div>
+        <div class="check">
+          <input id="delete-ack" name="ack" type="checkbox" required />
+          <label for="delete-ack">Entendo que a exclusão é definitiva.</label>
+        </div>
+        <div id="delete-error" class="alert" role="alert" hidden></div>
+        <div class="dialog-actions">
+          <button id="delete-cancel" class="btn btn-ghost" type="button">Cancelar</button>
+          <button id="delete-submit" class="btn btn-danger" type="submit">
+            <span class="btn-label">Excluir definitivamente</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+  </body>
+</html>

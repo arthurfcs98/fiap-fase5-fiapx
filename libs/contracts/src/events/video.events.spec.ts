@@ -7,9 +7,8 @@ import {
   videoFailedFixture,
   videoUploadedFixture,
 } from '../fixtures';
+import { EVENT_TYPES } from './event-types';
 import {
-  EVENT_TYPES,
-  notificationEvent,
   processingCompletedEvent,
   processingEvent,
   processingFailedEvent,
@@ -75,9 +74,21 @@ describe('eventos de vídeo v1 (contrato)', () => {
     expect(parseEvent(processingEvent, videoUploadedFixture).success).toBe(false);
   });
 
-  it('notification.events aceita video.failed e video.completed', () => {
-    expect(notificationEvent.parse(videoFailedFixture).type).toBe('video.failed');
-    expect(notificationEvent.parse(videoCompletedFixture).type).toBe('video.completed');
-    expect(parseEvent(notificationEvent, processingStartedFixture).success).toBe(false);
-  });
+  it.each([
+    ['video.failed', videoFailedEvent, videoFailedFixture],
+    ['video.completed', videoCompletedEvent, videoCompletedFixture],
+  ] as const)(
+    '%s carrega userId obrigatório (anonimização no user.deleted, seção 12)',
+    (_type, schema, fixture) => {
+      expect(schema.parse(fixture).payload.userId).toBe(fixture.payload.userId);
+      const { userId: _userId, ...withoutUserId } = fixture.payload;
+      expect(parseEvent(schema, { ...fixture, payload: withoutUserId })).toMatchObject({
+        success: false,
+        error: expect.stringContaining('payload.userId'),
+      });
+      expect(
+        parseEvent(schema, { ...fixture, payload: { ...fixture.payload, userId: 'x' } }).success,
+      ).toBe(false);
+    },
+  );
 });

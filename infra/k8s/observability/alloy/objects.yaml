@@ -1,0 +1,11 @@
+# A Role/RoleBinding que deixa esta ServiceAccount ler pods e logs do namespace fiapx fica em
+# infra/vm/k8s/observability-rbac.yaml, aplicada pelo root (o CD não pode criar RBAC). O NOME
+# "alloy" é o contrato entre os dois arquivos: mudou aqui, muda lá.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  labels:
+    app.kubernetes.io/name: alloy
+    app.kubernetes.io/component: observability
+automountServiceAccountToken: false   # só o pod do Alloy monta (spec.automountServiceAccountToken)

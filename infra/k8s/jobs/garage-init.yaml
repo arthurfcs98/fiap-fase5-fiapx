@@ -1,0 +1,83 @@
+# Setup idempotente do Garage (script em base/data/garage/garage-init.mjs, ConfigMap
+# fiapx-garage-init). Roda na imagem Node fixada (a mesma do garage-init do compose).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: garage-init
+  labels:
+    app.kubernetes.io/name: garage-init
+    app.kubernetes.io/component: setup
+    fiapx.io/phase: setup
+spec:
+  backoffLimit: 0                    # falhou = deploy para e reverte (sem tentar de novo às cegas)
+  activeDeadlineSeconds: 240         # < 300 s do JOB_TIMEOUT do deploy.sh
+  ttlSecondsAfterFinished: 21600     # 6 h para ler os logs, depois o Job some sozinho
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: garage-init
+        app.kubernetes.io/component: setup
+    spec:
+      restartPolicy: Never
+      priorityClassName: fiapx-lote       # Jobs saem antes dos serviços sob pressão
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: garage-init
+          image: node:22.23-alpine3.24@sha256:0a7108bf6c7bf5de370ffb1a3ed6be93d405b43ff159f681a8d18c0e2bc2e402
+          imagePullPolicy: IfNotPresent
+          command: ["node", "/scripts/garage-init.mjs"]
+          env:
+            - name: GARAGE_ADMIN_URL
+              value: http://garage:3903
+            - name: S3_BUCKET_RAW
+              value: fiapx-raw
+            - name: S3_BUCKET_ZIPS
+              value: fiapx-zips
+            - name: GARAGE_CAPACITY_BYTES
+              value: "4294967296"          # 4 GiB = PVC do Garage
+            - name: GARAGE_QUOTA_RAW_BYTES
+              value: "1073741824"          # 1 GiB   (infra/vm/README.md, D11)
+            - name: GARAGE_QUOTA_ZIPS_BYTES
+              value: "2684354560"          # 2,5 GiB (infra/vm/README.md, D11)
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef: { name: fiapx-garage, key: GARAGE_ADMIN_TOKEN }
+            - name: API_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: { name: fiapx-garage, key: API_ACCESS_KEY_ID }
+            - name: API_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: fiapx-garage, key: API_SECRET_ACCESS_KEY }
+            - name: WORKER_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: { name: fiapx-garage, key: WORKER_ACCESS_KEY_ID }
+            - name: WORKER_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: fiapx-garage, key: WORKER_SECRET_ACCESS_KEY }
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 250m
+              memory: 192Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: scripts
+          configMap:
+            name: fiapx-garage-init
