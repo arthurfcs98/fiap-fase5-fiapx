@@ -1,5 +1,9 @@
 # FIAP Frames: processamento de vídeos em microsserviços
 
+> **Vídeo de apresentação:** <https://youtu.be/mugHFp007Yw> · **Sistema no ar:**
+> <https://frames.asdevit.com> · **API (Swagger):** <https://frames.asdevit.com/api/docs> ·
+> **Arquitetura:** [`docs/arquitetura.md`](docs/arquitetura.md)
+
 Hackathon da pós-graduação **Software Architecture (FIAP, turma 14SOAT), Fase 5**. A FIAP X
 (empresa fictícia do enunciado) contratou um sistema que recebe vídeos, extrai **um frame por
 segundo** e entrega um `.zip` com as imagens. O produto se chama **FIAP Frames**
