@@ -1,6 +1,6 @@
 # FIAP Frames: processamento de vídeos em microsserviços
 
-> **Vídeo de apresentação:** <https://youtu.be/mugHFp007Yw> · **Sistema no ar:**
+> **Vídeo de apresentação:** <https://youtu.be/qWKGDIVb1Wg> · **Sistema no ar:**
 > <https://frames.asdevit.com> · **API (Swagger):** <https://frames.asdevit.com/api/docs> ·
 > **Arquitetura:** [`docs/arquitetura.md`](docs/arquitetura.md)
 
