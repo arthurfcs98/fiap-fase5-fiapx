@@ -142,7 +142,7 @@ services:
     restart: unless-stopped
 
   rabbitmq:
-    image: rabbitmq:4.3.6-management-alpine@sha256:1aab4d911053f3ee4ff9bb231f5192ebd6a12281f8044910256a667fdb04108d
+    image: rabbitmq:4.4.0-management-alpine@sha256:0452ee3fd3b9a74160b251e693338616b464f22df4d4ba43304c101bebdca292
     # Hostname fixo: o nome do nó (rabbit@rabbitmq) não muda ao recriar o container,
     # senão as filas "somem" do volume.
     hostname: rabbitmq
